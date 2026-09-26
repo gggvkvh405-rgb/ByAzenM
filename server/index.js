@@ -365,6 +365,7 @@ async function start() {
   } catch {}
 
   const app = express();
+  app.set('trust proxy', 1);
   const server = http.createServer(app);
   const io = new Server(server, {
     cors: { origin: '*', methods: ['GET', 'POST', 'PATCH', 'DELETE'] },
@@ -401,6 +402,14 @@ async function start() {
       res.status(e.status || 500).json({ error: e.message || 'error' });
     });
   }
+
+  function readHostFile(name) {
+    try { return fs.readFileSync(path.join(dataDir, name), 'utf8').trim(); } catch { return ''; }
+  }
+  app.get('/api/host', (_req, res) => {
+    const url = readHostFile('public-url.txt') || process.env.CBOPKA_PUBLIC_URL || '';
+    res.json({ url: url.startsWith('http') ? url : '', status: readHostFile('public-url-status.txt') });
+  });
 
   app.get('/api/health', (req, res) => {
     res.json({

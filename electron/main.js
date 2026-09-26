@@ -1,12 +1,16 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, globalShortcut, nativeImage, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, globalShortcut, nativeImage, Notification, clipboard, session, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { fork, exec } = require('child_process');
+const { startPublicHost } = require('./tunnel');
 
 let mainWindow = null;
 let overlayWindow = null;
 let tray = null;
 let serverProcess = null;
+let stopTunnel = () => {};
+let refreshTray = () => {};
+let publicUrl = '';
 const DEFAULT_PORT = 3000;
 
 function configPath() { return path.join(app.getPath('userData'), 'cbopka-config.json'); }
@@ -158,15 +162,58 @@ function createWindow() {
   });
 }
 
+function writeHostState(status, url) {
+  const dir = app.getPath('userData');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'public-url-status.txt'), status || '');
+    if (url) fs.writeFileSync(path.join(dir, 'public-url.txt'), url);
+  } catch (e) { console.log('host file', e.message); }
+}
+
+function openPublicHost() {
+  if (process.env.CBOPKA_NO_TUNNEL === '1') return;
+  writeHostState('Открываем адрес для друга…');
+  startPublicHost({
+    port: DEFAULT_PORT,
+    cacheDir: app.getPath('userData'),
+    onStatus: (s) => writeHostState(s)
+  }).then((handle) => {
+    stopTunnel = () => { try { handle.kill(); } catch {} };
+    publicUrl = handle.url;
+    writeHostState('Ссылка для друга готова. Отправь её и звони.', handle.url);
+    try { clipboard.writeText(handle.url); } catch {}
+    try { new Notification({ title: 'Cbopka', body: 'Ссылка для друга скопирована. Отправь её и звони из программы.' }).show(); } catch {}
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setTitle('Cbopka — ' + handle.url);
+    if (tray) tray.setToolTip('Cbopka · ' + handle.url);
+    try { refreshTray(); } catch {}
+    console.log('Public host', handle.url);
+  }).catch((e) => {
+    console.error('Public host failed', e);
+    writeHostState('Хост не открылся: ' + (e.message || e) + '. Друг не зайдёт, пока не перезапустишь программу с интернетом.');
+  });
+}
+
+function allowMedia() {
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(true));
+  try {
+    session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+      const sources = await desktopCapturer.getSources({ types: ['screen'] });
+      callback({ video: sources[0] });
+    }, { useSystemPicker: true });
+  } catch (e) { console.log('display media', e.message); }
+}
+
 function createTray() {
   try {
     const img = nativeImage.createFromPath(path.join(__dirname, 'tray.png'));
     tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
     const refresh = () => {
       const cfg = loadConfig();
-      tray.setToolTip('Cbopka');
+      tray.setToolTip(publicUrl ? 'Cbopka · ' + publicUrl : 'Cbopka');
       tray.setContextMenu(Menu.buildFromTemplate([
         { label: 'Открыть Cbopka', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+        { label: 'Скопировать ссылку для друга', enabled: !!publicUrl, click: () => { if (publicUrl) clipboard.writeText(publicUrl); } },
         { label: 'Оверлей', click: () => toggleOverlay() },
         { type: 'separator' },
         { label: 'Автозапуск', type: 'checkbox', checked: !!cfg.autostart, click: (item) => setAutostart(item.checked) },
@@ -175,6 +222,7 @@ function createTray() {
       ]));
     };
     tray.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
+    refreshTray = refresh;
     refresh();
   } catch (e) {
     console.log('tray unavailable', e.message);
@@ -258,6 +306,7 @@ app.whenReady().then(async () => {
     return true;
   });
 
+  allowMedia();
   const cfg = loadConfig();
   if (cfg.autostart) setAutostart(true);
   try {
@@ -267,6 +316,7 @@ app.whenReady().then(async () => {
     console.error('Failed local server', e);
     dialog.showErrorBox('Cbopka', 'Локальный сервер не запустился:\n' + e.message);
   }
+  if (!cfg.serverUrl) openPublicHost();
   createWindow();
   createTray();
   setupUpdater();
@@ -281,5 +331,5 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') { /* keep tray */ } });
-app.on('before-quit', () => { globalShortcut.unregisterAll(); if (serverProcess) { try { serverProcess.kill(); } catch {} } });
-app.on('will-quit', () => { if (serverProcess) { try { serverProcess.kill(); } catch {} } });
+app.on('before-quit', () => { globalShortcut.unregisterAll(); try { stopTunnel(); } catch {} if (serverProcess) { try { serverProcess.kill(); } catch {} } });
+app.on('will-quit', () => { try { stopTunnel(); } catch {} if (serverProcess) { try { serverProcess.kill(); } catch {} } });

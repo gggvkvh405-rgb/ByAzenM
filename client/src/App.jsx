@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import AuthScreen from './ui/AuthScreen.jsx';
 import Messenger from './ui/Messenger.jsx';
+import HostBar from './ui/HostBar.jsx';
 import { useMessenger } from './state/useMessenger.js';
 import { useCall } from './state/useCall.js';
 import { sha256 } from './lib/crypto.js';
@@ -27,9 +28,9 @@ function Main() {
     if (accent) document.documentElement.style.setProperty('--accent', accent);
   }, []);
   if (!m.token || !m.user) {
-    return <AuthScreen onLogin={m.login} onRegister={m.register} onDemo={m.demo} on2fa={m.login2fa} />;
+    return <><HostBar /><AuthScreen onLogin={m.login} onRegister={m.register} onDemo={m.demo} on2fa={m.login2fa} /></>;
   }
-  return <Messenger m={m} call={call} />;
+  return <><HostBar /><Messenger m={m} call={call} /></>;
 }
 
 function PinGate({ onUnlock }) {
