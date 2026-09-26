@@ -45,23 +45,39 @@ async function sharedBits(priv, pubJwk) {
   return new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, priv, 256));
 }
 
-export async function encryptDm(_peerId, theirBundle, plaintext) {
-  const me = await loadIdentity();
-  const eph = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
-  const secret = await sharedBits(eph.privateKey, theirBundle.identityPub);
+async function seal(priv, pubJwk, plaintext) {
+  const secret = await sharedBits(priv, pubJwk);
   const key = await crypto.subtle.importKey('raw', secret, 'AES-GCM', false, ['encrypt']);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
-  const ephPub = await crypto.subtle.exportKey('jwk', eph.publicKey);
-  return { v: 2, proto: 'signal-style-ecdh', eph: ephPub, ik: me.pubJwk, iv: b64(iv), ct: b64(ct) };
+  return { iv: b64(iv), ct: b64(ct) };
 }
 
-export async function decryptDm(_peerId, payload) {
-  const me = await loadIdentity();
-  const secret = await sharedBits(me.priv, payload.eph);
+async function openBox(priv, eph, box) {
+  const secret = await sharedBits(priv, eph);
   const key = await crypto.subtle.importKey('raw', secret, 'AES-GCM', false, ['decrypt']);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(payload.iv) }, key, ub64(payload.ct));
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(box.iv) }, key, ub64(box.ct));
   return new TextDecoder().decode(pt);
+}
+
+export async function encryptDm(_peerId, theirBundle, plaintext) {
+  const me = await loadIdentity();
+  const eph = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const ephPub = await crypto.subtle.exportKey('jwk', eph.publicKey);
+  const forPeer = await seal(eph.privateKey, theirBundle.identityPub, plaintext);
+  const forSelf = await seal(eph.privateKey, me.pubJwk, plaintext);
+  return { v: 2, proto: 'signal-style-ecdh', eph: ephPub, ik: me.pubJwk, iv: forPeer.iv, ct: forPeer.ct, self: forSelf };
+}
+
+export async function decryptDm(_peerId, payload, { own = false } = {}) {
+  const me = await loadIdentity();
+  if (own && payload?.self) return openBox(me.priv, payload.eph, payload.self);
+  try {
+    return await openBox(me.priv, payload.eph, { iv: payload.iv, ct: payload.ct });
+  } catch (e) {
+    if (payload?.self) return openBox(me.priv, payload.eph, payload.self);
+    throw e;
+  }
 }
 
 export async function sha256(text) {

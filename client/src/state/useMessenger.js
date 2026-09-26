@@ -111,8 +111,11 @@ export function useMessenger() {
       setMessages((prev) => {
         const list = prev[m.convoId] || [];
         if (list.some((x) => x.id === m.id)) return prev;
-        const cleaned = list.filter((x) => !(x.pending && x.fromId === m.fromId && Math.abs((x.at || 0) - m.at) < 8000));
-        return { ...prev, [m.convoId]: [...cleaned, m] };
+        const pending = list.find((x) => x.pending && x.fromId === m.fromId && Math.abs((x.at || 0) - m.at) < 8000);
+        const cleaned = list.filter((x) => x !== pending);
+        const next = pending?.meta?.plain ? { ...m, meta: { ...m.meta, plain: pending.meta.plain } } : m;
+        if (next.meta?.plain) rememberPlain(next.id, next.meta.plain);
+        return { ...prev, [m.convoId]: [...cleaned, next] };
       });
       if (m.fromId !== user.id) {
         chime('message');
@@ -122,7 +125,10 @@ export function useMessenger() {
       }
     });
     s.on('message:update', (m) => {
-      setMessages((prev) => ({ ...prev, [m.convoId]: (prev[m.convoId] || []).map((x) => x.id === m.id ? m : x) }));
+      setMessages((prev) => ({
+        ...prev,
+        [m.convoId]: (prev[m.convoId] || []).map((x) => x.id === m.id ? { ...m, meta: { ...m.meta, plain: x.meta?.plain || m.meta?.plain } } : x)
+      }));
     });
     s.on('typing', ({ convoId, userId, active }) => {
       setTyping((t) => ({ ...t, [convoId]: { ...(t[convoId] || {}), [userId]: active ? Date.now() : 0 } }));
@@ -194,21 +200,41 @@ export function useMessenger() {
         toast(ack?.error || 'Не отправилось');
         setMessages((prev) => ({ ...prev, [id]: (prev[id] || []).filter((m) => m.id !== optimistic.id) }));
       } else {
+        if (payload.e2e) rememberPlain(ack.message.id, text);
         setMessages((prev) => ({ ...prev, [id]: (prev[id] || []).map((m) => m.id === optimistic.id ? { ...ack.message, meta: payload.e2e ? { ...ack.message.meta, plain: text } : ack.message.meta } : m) }));
       }
     });
   }
 
+  function rememberPlain(id, text) {
+    if (!id || !text) return;
+    try {
+      const bag = JSON.parse(localStorage.getItem('cb_plain') || '{}');
+      bag[id] = text;
+      const keys = Object.keys(bag);
+      if (keys.length > 400) delete bag[keys[0]];
+      localStorage.setItem('cb_plain', JSON.stringify(bag));
+    } catch {}
+  }
+
+  function savedPlain(id) {
+    try { return JSON.parse(localStorage.getItem('cb_plain') || '{}')[id] || ''; } catch { return ''; }
+  }
+
   async function plainOf(m) {
     if (!m?.e2e) return m?.deleted ? '' : (m?.text || '');
     if (m.meta?.plain) return m.meta.plain;
+    const cached = savedPlain(m.id);
+    if (cached) return cached;
     if (decCache.current[m.id]) return decCache.current[m.id];
     try {
-      const text = await decryptDm(m.fromId, m.meta?.cipher);
+      const text = await decryptDm(m.fromId, m.meta?.cipher, { own: m.fromId === user.id });
       decCache.current[m.id] = text;
+      rememberPlain(m.id, text);
       return text;
     } catch {
-      return '🔒 не удалось расшифровать на этом устройстве';
+      if (m.fromId === user.id) return 'Вы отправили это сообщение. Собеседник его видит, а копия на этом устройстве не сохранилась.';
+      return 'Не удалось прочитать. Попросите отправить ещё раз.';
     }
   }
 

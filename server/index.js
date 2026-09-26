@@ -957,29 +957,38 @@ async function start() {
       if (m) emitToConvo(m.convoId, 'message:update', m);
     });
 
-    socket.on('call:invite', ({ toUserId, channelId, type = 'video', quality }) => {
+    socket.on('call:invite', (payload = {}, ack) => {
+      const reply = (body) => {
+        if (typeof ack === 'function') ack(body);
+        else if (body && body.ok === false) socket.emit('error_msg', { error: body.error });
+      };
+      const { toUserId, channelId, type = 'video', quality } = payload;
       const callId = crypto.randomUUID();
       if (toUserId) {
-        if (store.isBlocked(uid, toUserId)) return socket.emit('error_msg', { error: 'Пользователь недоступен' });
+        if (store.isBlocked(uid, toUserId)) return reply({ ok: false, error: 'Пользователь недоступен' });
         const target = store.getUser(toUserId);
         const policy = target?.privacy?.calls || 'everyone';
         const friends = (store.state.friendships[toUserId] || []).includes(uid);
         if (policy === 'nobody' || (policy === 'friends' && !friends)) {
-          return socket.emit('error_msg', { error: 'Пользователь не принимает звонки' });
+          return reply({ ok: false, error: 'Пользователь не принимает звонки' });
         }
-        if (!userSockets.has(toUserId)) return socket.emit('error_msg', { error: 'Собеседник не в сети' });
+        if (!userSockets.has(toUserId)) return reply({ ok: false, error: 'Собеседник не в сети. Пусть откроет вашу ссылку и зайдёт в этот чат.' });
         const call = { id: callId, type, initiator: uid, toUserId, participants: new Set([uid]), quality: quality || '1080p60', startedAt: Date.now() };
         calls.set(callId, call);
         emitToUser(toUserId, 'call:incoming', { callId, from: pub(user), type, quality: call.quality });
         socket.emit('call:outgoing', { callId, toUserId, type });
         notifyOffline(toUserId, { title: 'Звонок Cbopka', body: user.username + ' звонит' });
-      } else if (channelId) {
+        return reply({ ok: true, callId, toUserId, type });
+      }
+      if (channelId) {
         const members = convoMembers(channelId).filter((id) => id !== uid && userSockets.has(id));
         const call = { id: callId, type, initiator: uid, channelId, participants: new Set([uid]), startedAt: Date.now() };
         calls.set(callId, call);
         for (const id of members) emitToUser(id, 'call:incoming', { callId, from: pub(user), type, channelId });
         socket.emit('call:outgoing', { callId, channelId, type });
+        return reply({ ok: true, callId, channelId, type, warning: members.length ? '' : 'В канале сейчас никого нет в сети' });
       }
+      return reply({ ok: false, error: 'Некому звонить' });
     });
 
     socket.on('call:accept', ({ callId }) => {

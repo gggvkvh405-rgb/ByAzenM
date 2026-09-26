@@ -20,8 +20,11 @@ function TextBody({ m, plainOf }) {
     if (m.deleted) { setText(''); return; }
     plainOf(m).then((t) => { if (!dead) setText(t); });
     return () => { dead = true; };
-  }, [m.id, m.text, m.editedAt, m.e2e, m.deleted]);
+  }, [m.id, m.text, m.editedAt, m.e2e, m.deleted, m.meta?.plain, m.meta?.cipher?.self?.ct, m.meta?.cipher?.ct]);
   if (m.deleted) return <span style={{ color: 'var(--faint)', fontStyle: 'italic' }}>Сообщение удалено</span>;
+  if (text.startsWith('Не удалось прочитать') || text.startsWith('Вы отправили это сообщение')) {
+    return <span style={{ fontStyle: 'italic' }}>{text}</span>;
+  }
   return <span dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />;
 }
 
@@ -30,8 +33,8 @@ export default function Messenger({ m, call }) {
   const [tab, setTab] = useState('home');
   const [groupId, setGroupId] = useState(null);
   const [preferHome, setPreferHome] = useState(false);
-  const [sideOpen, setSideOpen] = useState(false);
-  const [showMembers, setShowMembers] = useState(true);
+  const [sideOpen, setSideOpen] = useState(() => (typeof window !== 'undefined' ? window.innerWidth > 900 : true));
+  const [showMembers, setShowMembers] = useState(false);
   const [modal, setModal] = useState(null);
   const [palette, setPalette] = useState(false);
   const [sideQ, setSideQ] = useState('');
@@ -117,6 +120,21 @@ export default function Messenger({ m, call }) {
       }).catch(() => {});
     }
   }, [token]);
+
+  async function ring(type) {
+    const toUserId = active?.kind === 'dm' ? active.peerId : null;
+    const channelId = active?.kind === 'channel' ? active.id : null;
+    if (!toUserId && !channelId) { toast('Откройте чат с другом'); return; }
+    try {
+      const res = await call.startCall({ toUserId, channelId, type });
+      setExpanded(true);
+      if (res?.warning) toast(res.warning);
+      else if (type === 'video' && res?.type === 'audio') toast('Камера недоступна — звоним голосом. Пусть друг нажмёт «Ответить»');
+      else toast(type === 'video' ? 'Видеозвонок пошёл. Пусть друг нажмёт «Ответить»' : 'Звоним… пусть друг нажмёт «Ответить»');
+    } catch (e) {
+      toast(e.message || 'Звонок не начался');
+    }
+  }
 
   function openDm(peer) {
     const id = dmId(user.id, peer.id);
@@ -243,7 +261,7 @@ export default function Messenger({ m, call }) {
   }
 
   return (
-    <div className={`shell ${showMembers && active?.group ? 'members' : ''}`} style={{ '--accent': accent || undefined }}>
+    <div className={`shell ${showMembers && active ? 'members' : ''} ${sideOpen ? '' : 'fold'}`} style={{ '--accent': accent || undefined }}>
       <div className="app-hairline" />
       <aside className={`rail ${sideOpen ? 'open' : ''}`}>
         <img src="./icon-192.png" className="rail-logo" alt="Cbopka" />
@@ -332,7 +350,7 @@ export default function Messenger({ m, call }) {
 
       <main className="chat" onDragOver={(e) => { e.preventDefault(); setDrop(true); }} onDragLeave={() => setDrop(false)} onDrop={(e) => { e.preventDefault(); setDrop(false); onFiles(e.dataTransfer.files); }}>
         <header className="chat-head">
-          <button className="icon-btn" onClick={() => setSideOpen((v) => !v)}><Icon name="menu" /></button>
+          <button className={`head-btn ${sideOpen ? 'on' : ''}`} title="Список чатов" onClick={() => setSideOpen((v) => !v)}><Icon name="menu" size={18} /><span>Чаты</span></button>
           {active ? (
             <>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -349,12 +367,13 @@ export default function Messenger({ m, call }) {
                   {!connected && ' · нет связи'}
                 </div>
               </div>
-              {active.kind === 'dm' && <button className="icon-btn" title="Позвонить" onClick={() => call.startCall({ toUserId: active.peerId, type: 'audio' })}><Icon name="phone" /></button>}
-              {active.kind === 'dm' && <button className="icon-btn" title="Видео" onClick={() => call.startCall({ toUserId: active.peerId, type: 'video' })}><Icon name="cam" /></button>}
-              {active.kind === 'channel' && active.channel?.type !== 'voice' && <button className="icon-btn" title="Созвать" onClick={() => call.startCall({ channelId: active.id, type: 'video' })}><Icon name="phone" /></button>}
-              <button className="icon-btn" title="Поиск по чату" onClick={() => setSearchOpen((v) => !v)}><Icon name="search" /></button>
-              <button className="icon-btn" onClick={() => setShowMembers((v) => !v)}><Icon name="users" /></button>
-              <button className="icon-btn" onClick={() => setModal({ type: 'chatinfo' })}><Icon name="settings" size={16} /></button>
+              <div className="head-actions">
+                <button className="head-btn call" title="Голосовой звонок" onClick={() => ring('audio')}><Icon name="phone" size={18} /><span>Звонок</span></button>
+                <button className="head-btn" title="Видеозвонок" onClick={() => ring('video')}><Icon name="cam" size={18} /><span>Видео</span></button>
+                <button className={`head-btn ${searchOpen ? 'on' : ''}`} title="Поиск по чату" onClick={() => setSearchOpen((v) => !v)}><Icon name="search" size={18} /><span>Поиск</span></button>
+                <button className={`head-btn ${showMembers ? 'on' : ''}`} title="Участники" onClick={() => setShowMembers((v) => !v)}><Icon name="users" size={18} /><span>Люди</span></button>
+                <button className="head-btn" title="О чате" onClick={() => setModal({ type: 'chatinfo' })}><Icon name="settings" size={18} /><span>Ещё</span></button>
+              </div>
             </>
           ) : <div style={{ color: 'var(--muted)' }}>Выберите чат</div>}
         </header>
@@ -490,15 +509,32 @@ export default function Messenger({ m, call }) {
         {drop && <div className="drop">Отпустите — файл уйдёт в чат</div>}
       </main>
 
-      {showMembers && active?.group && (
-        <aside className="members">
-          <div className="section-label">Участники</div>
-          {(Array.isArray(active.group.members) ? active.group.members : Object.entries(active.group.members).map(([id, role]) => ({ ...(m.users[id] || {}), id, role }))).map((mem) => (
+      {showMembers && active && (
+        <aside className="members open">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="section-label" style={{ margin: 0 }}>{active.group ? 'Участники' : 'Люди'}</div>
+            <button className="icon-btn" title="Закрыть" onClick={() => setShowMembers(false)}><Icon name="x" size={14} /></button>
+          </div>
+          {active.group && (Array.isArray(active.group.members) ? active.group.members : Object.entries(active.group.members || {}).map(([id, role]) => ({ ...(m.users[id] || {}), id, role }))).map((mem) => (
             <button key={mem.id} className="row" onClick={() => setModal({ type: 'profile', user: mem.id ? { ...m.users[mem.id], ...mem } : mem })}>
               <span style={{ position: 'relative' }}><img className="avatar sm" src={mem.avatar || m.users[mem.id]?.avatar} alt="" /><i className={`status-dot ${statusColor(online[mem.id]?.status || 'offline')}`} /></span>
               <span className="meta"><span className="name">{mem.username || m.users[mem.id]?.username}</span><span className="sub">{mem.role}</span></span>
             </button>
           ))}
+          {active.kind === 'dm' && active.peer && (
+            <button className="row" onClick={() => setModal({ type: 'profile', user: active.peer })}>
+              <span style={{ position: 'relative' }}><img className="avatar sm" src={active.peer.avatar} alt="" /><i className={`status-dot ${statusColor(online[active.peerId]?.status || 'offline')}`} /></span>
+              <span className="meta"><span className="name">{active.peer.username}</span><span className="sub">{online[active.peerId]?.status === 'offline' || !online[active.peerId] ? 'не в сети' : 'в сети'}</span></span>
+            </button>
+          )}
+          <div className="section-label">Друзья</div>
+          {friends.map((f) => (
+            <button key={f.id} className="row" onClick={() => openDm(f)}>
+              <span style={{ position: 'relative' }}><img className="avatar sm" src={f.avatar} alt="" /><i className={`status-dot ${statusColor(online[f.id]?.status || 'offline')}`} /></span>
+              <span className="meta"><span className="name">{f.username}</span><span className="sub">{online[f.id] && online[f.id].status !== 'offline' ? 'в сети' : 'не в сети'}</span></span>
+            </button>
+          ))}
+          {friends.length === 0 && <p style={{ color: 'var(--faint)', fontSize: 13, padding: '0 8px' }}>Пока никого. Добавьте друга через «+».</p>}
         </aside>
       )}
 
@@ -523,7 +559,7 @@ export default function Messenger({ m, call }) {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn ember" onClick={() => { call.acceptCall(); setExpanded(true); }}>Ответить</button>
+            <button className="btn ember" onClick={async () => { try { await call.acceptCall(); setExpanded(true); } catch (e) { toast(e.message || 'Не удалось ответить'); } }}>Ответить</button>
             <button className="btn danger" onClick={call.rejectCall}>Отклонить</button>
           </div>
         </div>
@@ -936,7 +972,7 @@ function ProfileCard({ person, m, call, onClose }) {
       <div style={{ color: 'var(--muted)' }}>{u.customEmoji} {u.customStatus || u.bio}</div>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button className="btn ember" onClick={() => { const id = dmId(m.user.id, u.id); m.setActiveId(id); onClose(); }}>Написать</button>
-        <button className="btn" onClick={() => { call.startCall({ toUserId: u.id, type: 'audio' }); onClose(); }}>Позвонить</button>
+        <button className="btn" onClick={async () => { try { await call.startCall({ toUserId: u.id, type: 'audio' }); onClose(); } catch (e) { m.toast(e.message || 'Звонок не начался'); } }}>Позвонить</button>
         <button className="btn danger" onClick={async () => { await api('/api/users/' + u.id + '/block', { token: m.token, method: 'POST' }); m.toast('Заблокирован'); onClose(); }}>Блок</button>
       </div>
       {m.active?.group && (m.active.group.members?.[m.user.id] === 'admin' || (Array.isArray(m.active.group.members) && m.active.group.members.find((x) => x.id === m.user.id)?.role === 'admin')) && (

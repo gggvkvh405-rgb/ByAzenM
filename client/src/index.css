@@ -77,6 +77,9 @@ button { cursor: pointer; }
   background: var(--bg);
 }
 .shell.members { grid-template-columns: 76px 300px minmax(0, 1fr) 248px; }
+.shell.fold { grid-template-columns: 76px minmax(0, 1fr); }
+.shell.fold.members { grid-template-columns: 76px minmax(0, 1fr) 248px; }
+.shell.fold .side { display: none; }
 .shell.secure .chat-scroll { filter: none; }
 .shell.blurred .chat-scroll, .shell.blurred .composer { filter: blur(16px); }
 
@@ -144,10 +147,21 @@ button { cursor: pointer; }
 
 .chat { display: flex; flex-direction: column; min-width: 0; background: var(--bg); position: relative; }
 .chat-head {
-  height: 64px; display: flex; align-items: center; gap: 12px; padding: 0 16px;
-  border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 86%, transparent);
-  backdrop-filter: blur(16px); position: sticky; top: 0; z-index: 5;
+  height: 64px; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+  border-bottom: 1px solid var(--line); background: var(--bg-2);
+  position: sticky; top: 0; z-index: 20;
 }
+.head-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.head-btn {
+  height: 36px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--bg-3); color: var(--text); display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 650; white-space: nowrap;
+}
+.head-btn span { line-height: 1; }
+.head-btn:hover { background: var(--bg-4); border-color: color-mix(in srgb, var(--text) 18%, var(--line)); }
+.head-btn.on { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.head-btn.call { background: #ff6a45; color: #1a0d08; border-color: transparent; }
+.head-btn.call:hover { filter: brightness(1.06); }
 .icon-btn {
   width: 36px; height: 36px; border-radius: 12px; border: 1px solid transparent; background: transparent;
   color: var(--muted); display: grid; place-items: center;
@@ -255,8 +269,8 @@ button { cursor: pointer; }
 .btn.danger { background: rgba(255,93,115,.14); color: var(--danger); }
 .toast-wrap { position: fixed; right: 16px; bottom: 16px; z-index: 70; display: flex; flex-direction: column; gap: 8px; }
 .hostbar {
-  position: fixed; z-index: 75; top: 12px; left: 50%; transform: translateX(-50%);
-  width: min(680px, calc(100% - 24px));
+  position: fixed; z-index: 30; bottom: 18px; left: 16px;
+  width: min(420px, calc(100% - 32px));
   background: #1a120e; color: #f6f1e8; border: 1px solid rgba(255, 106, 69, .45);
   border-radius: 16px; padding: 12px 14px; box-shadow: 0 18px 50px rgba(0,0,0,.45);
 }
@@ -329,16 +343,29 @@ button { cursor: pointer; }
 .waveform i { width: 3px; border-radius: 99px; background: var(--accent); display: block; }
 
 @media (max-width: 1180px) {
-  .shell.members { grid-template-columns: 72px 260px minmax(0, 1fr); }
+  .shell.members, .shell.fold.members { grid-template-columns: 72px 260px minmax(0, 1fr); }
+  .shell.fold { grid-template-columns: 72px minmax(0, 1fr); }
   .members { display: none; }
+  .shell.members .members {
+    display: flex; flex-direction: column; position: fixed; z-index: 36; top: 0; right: 0; bottom: 0;
+    width: min(320px, 92vw); background: var(--bg-2); border-left: 1px solid var(--line); padding: 12px; overflow: auto;
+  }
+}
+@media (max-width: 720px) {
+  .head-btn span { display: none; }
+  .head-btn { width: 36px; padding: 0; justify-content: center; }
 }
 @media (max-width: 900px) {
   .auth { grid-template-columns: 1fr; }
   .auth-brand { display: none; }
-  .shell, .shell.members { grid-template-columns: 1fr; }
+  .shell, .shell.members, .shell.fold, .shell.fold.members { grid-template-columns: 1fr; }
   .rail, .side, .members { display: none; }
-  .rail.open, .side.open {
-    display: flex; position: fixed; z-index: 30; top: 0; bottom: 0;
+  .rail.open, .side.open, .members.open {
+    display: flex; position: fixed; z-index: 36; top: 0; bottom: 0;
+  }
+  .members.open {
+    right: 0; width: min(320px, 92vw); flex-direction: column;
+    background: var(--bg-2); border-left: 1px solid var(--line); padding: 12px; overflow: auto;
   }
   .rail.open { width: 76px; }
   .side.open { left: 0; width: min(100%, 340px); }

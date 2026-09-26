@@ -158,7 +158,10 @@ export function useCall(socket, me) {
     const onDraw = (p) => setStrokes((s) => [...s.slice(-400), p.stroke]);
     const onVoiceJoined = async ({ channelId, existing }) => {
       await ensureIce();
-      if (!localRef.current) await grabMedia('audio');
+      if (!localRef.current) {
+        try { await grabMedia('audio'); }
+        catch { socket.emit('voice:leave', { channelId }); return; }
+      }
       setCall({ id: channelId, voice: true, channelId, type: 'audio', phase: 'active', startedAt: Date.now() });
       setVoiceChannel(channelId);
       for (const id of existing || []) {
@@ -211,25 +214,59 @@ export function useCall(socket, me) {
     return () => clearInterval(t);
   }, [call]);
 
+  function releasePreview() {
+    localRef.current?.getTracks().forEach((t) => t.stop());
+    rawRef.current?.getTracks().forEach((t) => t.stop());
+    localRef.current = null;
+    rawRef.current = null;
+  }
+
   async function startCall({ toUserId, channelId, type }) {
+    if (!socket?.connected) throw new Error('Нет связи с сервером. Подождите секунду и нажмите ещё раз.');
+    if (!toUserId && !channelId) throw new Error('Сначала откройте чат с другом.');
     await ensureIce();
-    await grabMedia(type === 'audio' ? 'audio' : 'video');
-    setCamOff(type === 'audio');
+    let used = type === 'audio' ? 'audio' : 'video';
+    try {
+      await grabMedia(used);
+    } catch {
+      if (used === 'video') {
+        try { await grabMedia('audio'); used = 'audio'; }
+        catch { throw new Error('Нет доступа к микрофону. Разрешите его для Cbopka в Windows и нажмите трубку ещё раз.'); }
+      } else {
+        throw new Error('Нет доступа к микрофону. Разрешите его для Cbopka в Windows и нажмите трубку ещё раз.');
+      }
+    }
+    setCamOff(used === 'audio');
     setMuted(ptt);
     if (ptt) localRef.current?.getAudioTracks().forEach((t) => { t.enabled = false; });
-    socket.emit('call:invite', { toUserId, channelId, type, quality });
-    setCall({ id: 'pending', toUserId, channelId, type, phase: 'calling', startedAt: Date.now() });
-    const onOut = ({ callId }) => {
-      setCall((c) => ({ ...(c || {}), id: callId, phase: 'ringing', toUserId, channelId, type, startedAt: Date.now() }));
-      socket.off('call:outgoing', onOut);
-    };
-    socket.on('call:outgoing', onOut);
+    let ack;
+    try {
+      ack = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Сервер не ответил на звонок')), 8000);
+        socket.emit('call:invite', { toUserId, channelId, type: used, quality }, (res) => {
+          clearTimeout(timer);
+          if (!res?.ok) reject(new Error(res?.error || 'Звонок не начался'));
+          else resolve(res);
+        });
+      });
+    } catch (e) {
+      releasePreview();
+      throw e;
+    }
+    setCall({ id: ack.callId, toUserId, channelId, type: used, phase: 'ringing', startedAt: Date.now() });
+    return { type: used, warning: ack.warning || '' };
   }
 
   async function acceptCall() {
-    if (!incoming) return;
+    if (!incoming) throw new Error('Звонок уже завершён');
+    if (!socket?.connected) throw new Error('Нет связи с сервером');
     await ensureIce();
-    await grabMedia(incoming.type === 'audio' ? 'audio' : 'video');
+    try {
+      await grabMedia(incoming.type === 'audio' ? 'audio' : 'video');
+    } catch {
+      try { await grabMedia('audio'); }
+      catch { throw new Error('Нет доступа к микрофону. Разрешите его и нажмите «Ответить» ещё раз.'); }
+    }
     setCall({ id: incoming.callId, type: incoming.type, phase: 'active', startedAt: Date.now(), peer: incoming.from });
     socket.emit('call:accept', { callId: incoming.callId });
     setIncoming(null);
