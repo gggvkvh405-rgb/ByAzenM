@@ -267,6 +267,9 @@ button { cursor: pointer; }
 .mic-ask h2 { margin: 0 0 8px; font-family: Fraunces, serif; font-weight: 560; }
 .mic-ask p { margin: 0; color: var(--muted); line-height: 1.45; }
 .mic-ask-err { color: var(--danger) !important; margin-top: 12px !important; }
+.mic-ask-ok { color: var(--accent-2) !important; margin-top: 12px !important; }
+.mic-level { height: 8px; border-radius: 99px; background: var(--bg-4); margin-top: 12px; overflow: hidden; }
+.mic-level > span { display: block; height: 100%; width: 0; background: var(--accent-2); transition: width .08s linear; }
 .mic-ask-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .field { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; outline: none; }
 .field:focus { border-color: var(--accent); }

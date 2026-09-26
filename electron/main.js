@@ -4,6 +4,7 @@ const fs = require('fs');
 const { fork, exec } = require('child_process');
 const net = require('net');
 const { startPublicHost } = require('./tunnel');
+const { startNativeMic, stopNativeMic, unlockMicConsent } = require('./winmic');
 
 let mainWindow = null;
 let overlayWindow = null;
@@ -226,7 +227,7 @@ function confirmMic() {
     noLink: true,
     title: 'Cbopka',
     message: 'Разрешить Cbopka доступ к микрофону?',
-    detail: 'Микрофон нужен, чтобы вас было слышно в звонке. Если Windows спросит ещё раз — нажмите «Да».'
+    detail: 'Микрофон нужен, чтобы вас было слышно в звонке. Если Windows спросит про Cbopka или PowerShell — нажмите «Да».'
   };
   const parent = BrowserWindow.getFocusedWindow() || mainWindow;
   const choice = parent ? dialog.showMessageBoxSync(parent, opts) : dialog.showMessageBoxSync(opts);
@@ -393,6 +394,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('reset-microphone', () => { mediaConsent = false; return true; });
   ipcMain.handle('open-mic-settings', () => openWinSetting(process.platform === 'win32' ? 'ms-settings:privacy-microphone' : 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'));
   ipcMain.handle('open-sound-settings', () => openWinSetting(process.platform === 'win32' ? 'ms-settings:sound' : 'x-apple.systempreferences:com.apple.preference.sound'));
+  ipcMain.handle('unlock-microphone', () => unlockMicConsent());
+  ipcMain.handle('native-mic-start', () => startNativeMic((b64) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('native-pcm', b64);
+  }));
+  ipcMain.handle('native-mic-stop', () => stopNativeMic());
   ipcMain.handle('open-recording-panel', () => new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve(false);
     exec('control mmsys.cpl,,1', { windowsHide: true }, (err) => resolve(!err));
@@ -435,5 +441,5 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') { /* keep tray */ } });
-app.on('before-quit', () => { globalShortcut.unregisterAll(); try { stopTunnel(); } catch {} if (serverProcess) { try { serverProcess.kill(); } catch {} } });
+app.on('before-quit', () => { globalShortcut.unregisterAll(); try { stopNativeMic(); } catch {} try { stopTunnel(); } catch {} if (serverProcess) { try { serverProcess.kill(); } catch {} } });
 app.on('will-quit', () => { try { stopTunnel(); } catch {} if (serverProcess) { try { serverProcess.kill(); } catch {} } });

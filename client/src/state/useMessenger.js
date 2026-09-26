@@ -258,7 +258,8 @@ export function useMessenger() {
   }
 
   async function sendVoice(blob, peaks) {
-    const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
+    const ext = (blob.type || '').includes('wav') ? 'wav' : 'webm';
+    const file = new File([blob], `voice-${Date.now()}.${ext}`, { type: blob.type || 'audio/webm' });
     const meta = await uploadFile(token, file);
     const bars = peaks || await waveformPeaks(blob);
     await send({ type: 'voice', text: 'Голосовое', meta: { ...meta, kind: 'audio', peaks: bars } });

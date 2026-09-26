@@ -8,6 +8,8 @@ files:
   - main.js
   - preload.js
   - tunnel.js
+  - winmic.js
+  - mic-helper.cs
   - package.json
   - tray.png
   - icon.png

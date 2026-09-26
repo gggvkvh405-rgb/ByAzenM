@@ -63,7 +63,7 @@ export function useCall(socket, me) {
       stream = await openMicStream({ video: false });
     }
     rawRef.current = stream;
-    if (noise) {
+    if (noise && !window.__cbNativeMic && !stream?.cbNative) {
       try { stream = await tryRnnoise(stream); } catch { stream = await applyNoiseGate(stream); }
     }
     if (video && bg !== 'none') {
@@ -152,10 +152,14 @@ export function useCall(socket, me) {
     setViaServer(false);
     for (const pc of pcs.current.values()) { try { pc.close(); } catch {} }
     pcs.current.clear();
+    try { localRef.current?.__cbCtx?.close(); } catch {}
+    try { rawRef.current?.__cbCtx?.close(); } catch {}
     localRef.current?.getTracks().forEach((t) => t.stop());
     rawRef.current?.getTracks().forEach((t) => t.stop());
     localRef.current = null;
     rawRef.current = null;
+    try { window.cbopkaAPI?.stopNativeMic?.(); } catch {}
+    window.__cbNativeMic = false;
     setRemotes({});
     setSharing(false);
     setHand(false);
@@ -249,10 +253,14 @@ export function useCall(socket, me) {
   }, [call]);
 
   function releasePreview() {
+    try { localRef.current?.__cbCtx?.close(); } catch {}
+    try { rawRef.current?.__cbCtx?.close(); } catch {}
     localRef.current?.getTracks().forEach((t) => t.stop());
     rawRef.current?.getTracks().forEach((t) => t.stop());
     localRef.current = null;
     rawRef.current = null;
+    try { window.cbopkaAPI?.stopNativeMic?.(); } catch {}
+    window.__cbNativeMic = false;
   }
 
   async function startCall({ toUserId, channelId, type }) {

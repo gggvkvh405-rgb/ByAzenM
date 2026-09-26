@@ -15,9 +15,28 @@ export default function MicPrompt() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [note, setNote] = useState('');
+  const [level, setLevel] = useState(0);
 
   useEffect(() => {
-    const show = () => { setErr(''); setOpen(true); };
+    if (!open || !window.cbopkaAPI?.onNativePcm) return;
+    const id = window.cbopkaAPI.onNativePcm((b64) => {
+      try {
+        const bin = atob(b64);
+        let peak = 0;
+        for (let i = 0; i + 1 < bin.length; i += 16) {
+          const s = bin.charCodeAt(i) | (bin.charCodeAt(i + 1) << 8);
+          const v = s > 32767 ? s - 65536 : s;
+          if (Math.abs(v) > peak) peak = Math.abs(v);
+        }
+        setLevel(Math.min(100, Math.round((peak / 32768) * 100)));
+      } catch {}
+    });
+    return () => window.cbopkaAPI.offNativePcm?.(id);
+  }, [open]);
+
+  useEffect(() => {
+    const show = () => { setErr(''); setNote(''); setLevel(0); setOpen(true); };
     if (!micGranted() && sessionStorage.getItem('cb_mic_later') !== '1') {
       const t = setTimeout(show, 500);
       window.addEventListener('cb-mic-request', show);
@@ -36,9 +55,14 @@ export default function MicPrompt() {
   async function allow() {
     setBusy(true);
     setErr('');
+    setNote('');
     const res = await requestMic();
     setBusy(false);
-    if (res.ok) { finish(true); return; }
+    if (res.ok) {
+      setNote(res.device ? `Микрофон открыт: ${res.device}. Можно звонить.` : 'Микрофон открыт. Можно звонить.');
+      setTimeout(() => finish(true), 1200);
+      return;
+    }
     setErr(res.error || 'Не удалось получить микрофон');
   }
 
@@ -53,10 +77,12 @@ export default function MicPrompt() {
       <div className="modal mic-ask" onClick={(e) => e.stopPropagation()}>
         <div className="mic-ask-icon"><MicMark /></div>
         <h2 id="mic-title">Доступ к микрофону</h2>
-        <p>Cbopka запрашивает микрофон, чтобы вас было слышно в звонке. Нажмите «Разрешить». Если Windows спросит отдельно — тоже нажмите «Разрешить».</p>
+        <p>Cbopka запрашивает микрофон, чтобы вас было слышно в звонке. Нажмите «Разрешить». Если Windows спросит про Cbopka или PowerShell — нажмите «Да».</p>
+        {note && <p className="mic-ask-ok">{note}</p>}
+        {(busy || level > 0) && <div className="mic-level" aria-hidden="true"><span style={{ width: `${level}%` }} /></div>}
         {err && <p className="mic-ask-err">{err}</p>}
         <div className="mic-ask-actions">
-          <button className="btn ember" disabled={busy} onClick={allow}>{busy ? 'Ищем микрофон…' : 'Разрешить'}</button>
+          <button className="btn ember" disabled={busy} onClick={allow}>{busy ? 'Открываю микрофон…' : 'Разрешить'}</button>
           {err && <button className="btn" onClick={() => window.cbopkaAPI?.openRecordingPanel?.()}>Устройства записи</button>}
           {err && <button className="btn" onClick={() => openMicSettings()}>Доступ Windows</button>}
           {err && <button className="btn" onClick={() => openSoundSettings()}>Звук</button>}

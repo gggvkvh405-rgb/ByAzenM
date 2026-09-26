@@ -1,0 +1,247 @@
+const { spawn, execFile } = require('child_process');
+const net = require('net');
+const fs = require('fs');
+const path = require('path');
+
+const PS1 = [
+  'param([int]$Port, [string]$Src)',
+  '$ErrorActionPreference = "Stop"',
+  'try {',
+  '  $code = [System.IO.File]::ReadAllText($Src)',
+  '  Add-Type -TypeDefinition $code',
+  '  [CbopkaMic]::Run($Port)',
+  '} catch {',
+  '  [Console]::Error.WriteLine($_.Exception.ToString())',
+  '  exit 1',
+  '}',
+  ''
+].join('\r\n');
+
+let child = null;
+let server = null;
+let sock = null;
+let live = null;
+let inflight = null;
+let session = 0;
+let stoppedAt = 0;
+let unlockDone = false;
+
+function parseFrames(state, chunk, onStatus, onPcm) {
+  const next = state.buf && state.buf.length ? Buffer.concat([state.buf, chunk]) : Buffer.from(chunk);
+  state.buf = next;
+  while (state.buf.length >= 5) {
+    const type = state.buf[0];
+    const len = state.buf.readUInt32LE(1);
+    if (len > 200000) {
+      state.buf = Buffer.alloc(0);
+      if (onStatus) onStatus('FAIL\t0\tbad frame');
+      return;
+    }
+    if (state.buf.length < 5 + len) return;
+    const payload = state.buf.subarray(5, 5 + len);
+    state.buf = state.buf.subarray(5 + len);
+    if (type === 1 && onStatus) onStatus(payload.toString('utf8'));
+    else if (type === 2 && onPcm) onPcm(payload);
+  }
+}
+
+function describeFail(token, text) {
+  const t = String(token || '').toUpperCase();
+  const map = {
+    4: 'микрофон занят монопольным режимом',
+    5: 'Windows запретила доступ к микрофону',
+    6: 'нет драйвера записи',
+    2: 'устройство записи не найдено',
+    32: 'формат записи не подошёл',
+    '8889000A': 'микрофон занят монопольным режимом',
+    '88890008': 'формат записи не подошёл',
+    '80070005': 'Windows запретила доступ к микрофону'
+  };
+  if (map[t]) return map[t];
+  const line = String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || '';
+  if (!line) return t ? ('код ' + t) : 'не открылся';
+  return line.slice(0, 180);
+}
+
+function userDataDir() {
+  try { return require('electron').app.getPath('userData'); } catch {}
+  return path.join(process.env.TEMP || process.env.TMP || '/tmp', 'cbopka-mic');
+}
+
+function bundledSource() {
+  const candidates = [
+    path.join(__dirname, 'mic-helper.cs'),
+    path.join(process.resourcesPath || '', 'mic-helper.cs')
+  ];
+  for (const p of candidates) {
+    try {
+      if (p && fs.existsSync(p)) return fs.readFileSync(p);
+    } catch {}
+  }
+  throw new Error('mic-helper.cs missing');
+}
+
+function materializeSource() {
+  const dir = userDataDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, 'mic-helper.cs');
+  fs.writeFileSync(dest, bundledSource());
+  const ps1 = path.join(dir, 'cbopka-mic.ps1');
+  fs.writeFileSync(ps1, PS1, 'ascii');
+  return { dir, cs: dest, ps1 };
+}
+
+function regAdd(key, name, type, data) {
+  return new Promise((resolve) => {
+    execFile('reg', ['add', key, '/v', name, '/t', type, '/d', data, '/f'], { windowsHide: true, timeout: 8000 }, (err) => resolve(!err));
+  });
+}
+
+function unlockMicConsent() {
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false });
+  if (unlockDone) return Promise.resolve({ ok: true });
+  const base = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone';
+  const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const paths = [process.execPath, ps].filter(Boolean).map((p) => p.replace(/\\/g, '#'));
+  const jobs = [
+    regAdd(base, 'Value', 'REG_SZ', 'Allow'),
+    regAdd(base + '\\NonPackaged', 'Value', 'REG_SZ', 'Allow'),
+    regAdd(base + '\\ConsentV2Unverified', 'Value', 'REG_DWORD', '1')
+  ];
+  for (const encoded of paths) {
+    jobs.push(regAdd(base + '\\NonPackaged\\' + encoded, 'Value', 'REG_SZ', 'Allow'));
+  }
+  return Promise.all(jobs).then((flags) => {
+    if (flags.some(Boolean)) unlockDone = true;
+    return { ok: flags.some(Boolean) };
+  });
+}
+
+function powershellExe() {
+  const full = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return fs.existsSync(full) ? full : 'powershell.exe';
+}
+
+function cleanup() {
+  try { sock && sock.destroy(); } catch {}
+  try { server && server.close(); } catch {}
+  sock = null;
+  server = null;
+  if (child && !child.killed) {
+    try { child.kill(); } catch {}
+  }
+  child = null;
+  live = null;
+}
+
+function stopNativeMic() {
+  session += 1;
+  stoppedAt = Date.now();
+  cleanup();
+  return true;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function launch(onPcm) {
+  const my = session;
+  let files;
+  try { files = materializeSource(); } catch (e) {
+    return Promise.resolve({ ok: false, error: e.message, code: 'missing' });
+  }
+  return new Promise((resolve) => {
+    const listener = net.createServer();
+    let settled = false;
+    const finish = (res) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (my !== session) {
+        resolve({ ok: false, error: 'stopped', code: 'stopped' });
+        return;
+      }
+      if (!res.ok) cleanup();
+      else live = { result: res, onPcm };
+      resolve(res);
+    };
+    const timer = setTimeout(() => finish({ ok: false, error: 'микрофон Windows не ответил', code: 'timeout' }), 20000);
+    listener.on('connection', (socket) => {
+      const addr = socket.remoteAddress || '';
+      if (addr && addr !== '127.0.0.1' && !addr.endsWith('127.0.0.1')) {
+        socket.destroy();
+        return;
+      }
+      sock = socket;
+      const state = { buf: Buffer.alloc(0) };
+      socket.on('data', (chunk) => {
+        parseFrames(state, chunk, (status) => {
+          if (status.startsWith('READY')) {
+            const p = status.split('\t');
+            finish({ ok: true, engine: p[1] || '', device: p[2] || 'микрофон Windows', rate: Number(p[3]) || 16000 });
+          } else if (status.startsWith('FAIL')) {
+            const p = status.split('\t');
+            finish({ ok: false, code: p[1] || '', error: describeFail(p[1], p.slice(2).join(' ')) });
+          }
+        }, (pcm) => {
+          const b64 = pcm.toString('base64');
+          if (live && live.onPcm) live.onPcm(b64);
+        });
+      });
+      socket.on('error', () => {});
+      socket.on('close', () => {
+        if (!settled) finish({ ok: false, error: 'захват закрылся', code: 'closed' });
+        if (live && my === session) live = null;
+      });
+    });
+    listener.on('error', (e) => finish({ ok: false, error: e.message, code: 'listen' }));
+    server = listener;
+    listener.listen(0, '127.0.0.1', () => {
+      const port = listener.address().port;
+      let log = '';
+      const proc = spawn(powershellExe(), [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+        '-File', files.ps1, '-Port', String(port), '-Src', files.cs
+      ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      if (my !== session) {
+        try { proc.kill(); } catch {}
+        return;
+      }
+      child = proc;
+      const take = (buf) => {
+        log += buf.toString();
+        if (log.length > 4000) log = log.slice(-4000);
+      };
+      proc.stdout?.on('data', take);
+      proc.stderr?.on('data', take);
+      proc.on('error', (e) => finish({ ok: false, error: e.message, code: 'spawn' }));
+      proc.on('exit', (code) => {
+        if (!settled) finish({ ok: false, error: describeFail('', log) || ('процесс завершился ' + code), code: String(code ?? 'exit') });
+      });
+    });
+  });
+}
+
+function startNativeMic(onPcm) {
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: 'not-windows', code: 'platform' });
+  if (live && child && !child.killed) {
+    live.onPcm = onPcm || live.onPcm;
+    return Promise.resolve(live.result);
+  }
+  if (inflight) {
+    return inflight.then((res) => {
+      if (live && onPcm) live.onPcm = onPcm;
+      return res;
+    });
+  }
+  inflight = (async () => {
+    const gap = 500 - (Date.now() - stoppedAt);
+    if (stoppedAt && gap > 0) await sleep(gap);
+    try { await unlockMicConsent(); } catch {}
+    return launch(onPcm);
+  })().finally(() => { inflight = null; });
+  return inflight;
+}
+
+module.exports = { parseFrames, describeFail, startNativeMic, stopNativeMic, unlockMicConsent };

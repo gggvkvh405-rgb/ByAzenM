@@ -9,7 +9,7 @@ import { dayLabel, timeShort, lastSeen, dmId, bytes, statusColor } from '../lib/
 import { soundsOn, setSounds } from '../lib/sounds.js';
 import { sha256 } from '../lib/crypto.js';
 import { QUALITY, waveformPeaks } from '../lib/media.js';
-import { ensureMic } from '../lib/mic.js';
+import { ensureMic, openMicStream, wavFromPcm16 } from '../lib/mic.js';
 import { primeAudio } from '../lib/callRelay.js';
 
 const EMOJI = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😅','😭','😡','👍','👎','👏','🔥','❤️','🧡','💛','💚','💙','💜','🖤','✨','🎉','✅','❌','👀','🤝','🙏','💯','⚡','🌙','☀️','🍀','🎵','📎','💬','🫡','🫠'];
@@ -225,7 +225,22 @@ export default function Messenger({ m, call }) {
   async function toggleVoice() {
     if (recordingVoice) { recRef.current?.stop(); setRecordingVoice(false); return; }
     if (!await ensureMic()) { toast('Сначала разрешите микрофон'); return; }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    let stream;
+    try { stream = await openMicStream({ video: false }); }
+    catch { toast('Микрофон не открылся'); return; }
+    if (window.__cbNativeMic && window.cbopkaAPI?.onNativePcm) {
+      const chunks = [];
+      const id = window.cbopkaAPI.onNativePcm((b64) => chunks.push(b64));
+      recRef.current = {
+        stop: async () => {
+          window.cbopkaAPI.offNativePcm?.(id);
+          const blob = wavFromPcm16(chunks);
+          try { await m.sendVoice(blob, await waveformPeaks(blob)); } catch (e) { toast(e.message); }
+        }
+      };
+      setRecordingVoice(true);
+      return;
+    }
     const rec = new MediaRecorder(stream);
     const chunks = [];
     rec.ondataavailable = (e) => chunks.push(e.data);

@@ -79,13 +79,26 @@ export function createCallRelay(socket, getMeta, isMuted) {
     silent = null;
   }
 
+  let pcmId = 0;
+
   function start(stream) {
     stopCapture();
+    if (pcmId) { try { window.cbopkaAPI?.offNativePcm?.(pcmId); } catch {} pcmId = 0; }
     alive = true;
     socket.off('call:audio', onAudio);
     socket.off('voice:audio', onAudio);
     socket.on('call:audio', onAudio);
     socket.on('voice:audio', onAudio);
+    primeAudio();
+    if (window.__cbNativeMic || stream?.cbNative) {
+      pcmId = window.cbopkaAPI?.onNativePcm?.((b64) => {
+        if (!alive || isMuted() || !b64) return;
+        const meta = getMeta();
+        if (!meta?.id) return;
+        socket.emit(meta.event, { [meta.key]: meta.id, chunk: b64 });
+      }) || 0;
+      return;
+    }
     const audio = primeAudio();
     const track = stream?.getAudioTracks?.().find((t) => t.readyState === 'live');
     if (!audio || !track) return;
@@ -113,6 +126,7 @@ export function createCallRelay(socket, getMeta, isMuted) {
 
   function stop() {
     alive = false;
+    if (pcmId) { try { window.cbopkaAPI?.offNativePcm?.(pcmId); } catch {} pcmId = 0; }
     socket.off('call:audio', onAudio);
     socket.off('voice:audio', onAudio);
     stopCapture();
