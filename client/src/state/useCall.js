@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { origin } from '../lib/api.js';
 import { applyNoiseGate, tryRnnoise, screenConstraints, virtualBackgroundTrack, openWebTransport } from '../lib/media.js';
 import { chime } from '../lib/sounds.js';
+import { reopenMicPrompt } from '../lib/mic.js';
 
 export function useCall(socket, me) {
   const pcs = useRef(new Map());
@@ -231,9 +232,10 @@ export function useCall(socket, me) {
     } catch {
       if (used === 'video') {
         try { await grabMedia('audio'); used = 'audio'; }
-        catch { throw new Error('Нет доступа к микрофону. Разрешите его для Cbopka в Windows и нажмите трубку ещё раз.'); }
+        catch { reopenMicPrompt(); throw new Error('Нет доступа к микрофону. Нажмите «Разрешить» в окне Cbopka.'); }
       } else {
-        throw new Error('Нет доступа к микрофону. Разрешите его для Cbopka в Windows и нажмите трубку ещё раз.');
+        reopenMicPrompt();
+        throw new Error('Нет доступа к микрофону. Нажмите «Разрешить» в окне Cbopka.');
       }
     }
     setCamOff(used === 'audio');
@@ -265,7 +267,7 @@ export function useCall(socket, me) {
       await grabMedia(incoming.type === 'audio' ? 'audio' : 'video');
     } catch {
       try { await grabMedia('audio'); }
-      catch { throw new Error('Нет доступа к микрофону. Разрешите его и нажмите «Ответить» ещё раз.'); }
+      catch { reopenMicPrompt(); throw new Error('Нет доступа к микрофону. Нажмите «Разрешить» в окне Cbopka.'); }
     }
     setCall({ id: incoming.callId, type: incoming.type, phase: 'active', startedAt: Date.now(), peer: incoming.from });
     socket.emit('call:accept', { callId: incoming.callId });

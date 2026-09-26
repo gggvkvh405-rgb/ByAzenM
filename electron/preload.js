@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('cbopkaAPI', {
   setContentProtection: (on) => ipcRenderer.invoke('set-content-protection', on),
   toggleOverlay: () => ipcRenderer.invoke('toggle-overlay'),
   notify: (payload) => ipcRenderer.invoke('notify', payload),
+  askMicrophone: () => ipcRenderer.invoke('ask-microphone'),
+  resetMicrophone: () => ipcRenderer.invoke('reset-microphone'),
+  openMicSettings: () => ipcRenderer.invoke('open-mic-settings'),
   platform: process.platform,
   onHotkey: (cb) => ipcRenderer.on('hotkey', (_e, name) => cb(name)),
   onGame: (cb) => ipcRenderer.on('game', (_e, name) => cb(name))

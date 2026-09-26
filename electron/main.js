@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, globalShortcut, nativeImage, Notification, clipboard, session, desktopCapturer } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, globalShortcut, nativeImage, Notification, clipboard, session, desktopCapturer, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { fork, exec } = require('child_process');
@@ -13,7 +13,10 @@ let stopTunnel = () => {};
 let refreshTray = () => {};
 let publicUrl = '';
 let activePort = 3000;
+let mediaConsent = false;
 const DEFAULT_PORT = 3000;
+
+if (process.platform === 'win32') app.setAppUserModelId('com.cbopka.desktop');
 
 function configPath() { return path.join(app.getPath('userData'), 'cbopka-config.json'); }
 function loadConfig() {
@@ -210,8 +213,34 @@ function openPublicHost() {
   });
 }
 
+function confirmMic() {
+  if (mediaConsent) return true;
+  const opts = {
+    type: 'question',
+    buttons: ['Разрешить', 'Запретить'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+    title: 'Cbopka',
+    message: 'Разрешить Cbopka доступ к микрофону?',
+    detail: 'Микрофон нужен, чтобы вас было слышно в звонке. Если Windows спросит ещё раз — нажмите «Да».'
+  };
+  const parent = BrowserWindow.getFocusedWindow() || mainWindow;
+  const choice = parent ? dialog.showMessageBoxSync(parent, opts) : dialog.showMessageBoxSync(opts);
+  mediaConsent = choice === 0;
+  return mediaConsent;
+}
+
 function allowMedia() {
-  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(true));
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    const media = permission === 'media' || permission === 'microphone' || permission === 'camera' || permission === 'audioCapture';
+    if (media) {
+      const types = details?.mediaTypes || [];
+      if (types.length && !types.includes('audio') && !types.includes('video')) return callback(true);
+      return callback(confirmMic());
+    }
+    callback(true);
+  });
   try {
     session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
       const sources = await desktopCapturer.getSources({ types: ['screen'] });
@@ -320,6 +349,32 @@ app.whenReady().then(async () => {
   ipcMain.handle('notify', (_e, payload) => {
     try { new Notification({ title: payload?.title || 'Cbopka', body: payload?.body || '' }).show(); } catch {}
     return true;
+  });
+  ipcMain.handle('ask-microphone', async () => {
+    if (process.platform === 'darwin') {
+      try {
+        const ok = await systemPreferences.askForMediaAccess('microphone');
+        mediaConsent = !!ok;
+        return { ok: mediaConsent, status: mediaConsent ? 'granted' : 'denied' };
+      } catch (e) {
+        return { ok: false, status: 'denied', error: e.message };
+      }
+    }
+    let status = 'unknown';
+    try { status = systemPreferences.getMediaAccessStatus('microphone'); } catch {}
+    if (status === 'denied' || status === 'restricted') {
+      mediaConsent = false;
+      try { await shell.openExternal('ms-settings:privacy-microphone'); } catch {}
+      return { ok: false, status, error: 'Windows запрещает микрофон. Включите доступ для классических приложений и нажмите «Разрешить» ещё раз.' };
+    }
+    const ok = confirmMic();
+    return { ok, status: ok ? 'granted' : 'denied' };
+  });
+  ipcMain.handle('reset-microphone', () => { mediaConsent = false; return true; });
+  ipcMain.handle('open-mic-settings', async () => {
+    if (process.platform === 'win32') return shell.openExternal('ms-settings:privacy-microphone');
+    if (process.platform === 'darwin') return shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+    return false;
   });
 
   allowMedia();

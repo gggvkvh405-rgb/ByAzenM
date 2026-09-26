@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import AuthScreen from './ui/AuthScreen.jsx';
 import Messenger from './ui/Messenger.jsx';
 import HostBar from './ui/HostBar.jsx';
+import MicPrompt from './ui/MicPrompt.jsx';
 import { useMessenger } from './state/useMessenger.js';
 import { useCall } from './state/useCall.js';
 import { sha256 } from './lib/crypto.js';
@@ -15,7 +16,7 @@ export default function App() {
 function Root() {
   const [unlocked, setUnlocked] = useState(() => !localStorage.getItem('cb_pin'));
   if (!unlocked) return <PinGate onUnlock={() => setUnlocked(true)} />;
-  return <Main />;
+  return <><MicPrompt /><Main /></>;
 }
 
 function Main() {
