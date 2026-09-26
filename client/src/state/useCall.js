@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { origin } from '../lib/api.js';
 import { applyNoiseGate, tryRnnoise, screenConstraints, virtualBackgroundTrack, openWebTransport } from '../lib/media.js';
 import { chime } from '../lib/sounds.js';
-import { reopenMicPrompt } from '../lib/mic.js';
+import { reopenMicPrompt, openMicStream } from '../lib/mic.js';
 
 export function useCall(socket, me) {
   const pcs = useRef(new Map());
@@ -50,10 +50,13 @@ export function useCall(socket, me) {
 
   async function grabMedia(kind) {
     const video = kind !== 'audio';
-    let stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: video ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : false
-    });
+    let stream;
+    try {
+      stream = await openMicStream({ video });
+    } catch (e) {
+      if (!video) throw e;
+      stream = await openMicStream({ video: false });
+    }
     rawRef.current = stream;
     if (noise) {
       try { stream = await tryRnnoise(stream); } catch { stream = await applyNoiseGate(stream); }

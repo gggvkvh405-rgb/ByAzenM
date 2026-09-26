@@ -231,16 +231,33 @@ function confirmMic() {
   return mediaConsent;
 }
 
-function allowMedia() {
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
-    const media = permission === 'media' || permission === 'microphone' || permission === 'camera' || permission === 'audioCapture';
-    if (media) {
-      const types = details?.mediaTypes || [];
-      if (types.length && !types.includes('audio') && !types.includes('video')) return callback(true);
-      return callback(confirmMic());
+function openWinSetting(uri) {
+  return new Promise((resolve) => {
+    if (process.platform === 'win32') {
+      exec(`cmd /c start "" "${uri}"`, { windowsHide: true }, (err) => {
+        if (!err) return resolve(true);
+        shell.openExternal(uri).then(() => resolve(true)).catch(() => resolve(false));
+      });
+      return;
     }
+    if (process.platform === 'darwin' && uri.includes('privacy-microphone')) {
+      shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone').then(() => resolve(true)).catch(() => resolve(false));
+      return;
+    }
+    shell.openExternal(uri).then(() => resolve(true)).catch(() => resolve(false));
+  });
+}
+
+function allowMedia() {
+  const isMedia = (permission) => permission === 'media' || permission === 'microphone' || permission === 'camera' || permission === 'audioCapture' || permission === 'videoCapture';
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => isMedia(permission) || permission === 'notifications' || permission === 'clipboard-sanitized-write' || true);
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (isMedia(permission)) mediaConsent = true;
     callback(true);
   });
+  try {
+    session.defaultSession.setDevicePermissionHandler(() => true);
+  } catch {}
   try {
     session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
       const sources = await desktopCapturer.getSources({ types: ['screen'] });
@@ -364,17 +381,26 @@ app.whenReady().then(async () => {
     try { status = systemPreferences.getMediaAccessStatus('microphone'); } catch {}
     if (status === 'denied' || status === 'restricted') {
       mediaConsent = false;
-      try { await shell.openExternal('ms-settings:privacy-microphone'); } catch {}
-      return { ok: false, status, error: 'Windows запрещает микрофон. Включите доступ для классических приложений и нажмите «Разрешить» ещё раз.' };
+      await openWinSetting('ms-settings:privacy-microphone');
+      return { ok: false, status, error: 'Windows запрещает микрофон. Включите «Доступ к микрофону» и «Разрешить классическим приложениям доступ к микрофону», затем нажмите «Разрешить» ещё раз.' };
     }
     const ok = confirmMic();
-    return { ok, status: ok ? 'granted' : 'denied' };
+    return { ok, status: ok ? (status === 'unknown' ? 'granted' : status) : 'denied' };
   });
   ipcMain.handle('reset-microphone', () => { mediaConsent = false; return true; });
-  ipcMain.handle('open-mic-settings', async () => {
-    if (process.platform === 'win32') return shell.openExternal('ms-settings:privacy-microphone');
-    if (process.platform === 'darwin') return shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
-    return false;
+  ipcMain.handle('open-mic-settings', () => openWinSetting(process.platform === 'win32' ? 'ms-settings:privacy-microphone' : 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'));
+  ipcMain.handle('open-sound-settings', () => openWinSetting(process.platform === 'win32' ? 'ms-settings:sound' : 'x-apple.systempreferences:com.apple.preference.sound'));
+  ipcMain.handle('list-mics', async () => {
+    let status = 'unknown';
+    try { status = systemPreferences.getMediaAccessStatus('microphone'); } catch {}
+    if (process.platform !== 'win32') return { status, names: [] };
+    const names = await new Promise((resolve) => {
+      exec('powershell -NoProfile -Command "Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq \'OK\' } | Select-Object -ExpandProperty FriendlyName"', { timeout: 8000, windowsHide: true }, (err, stdout) => {
+        if (err || !stdout) return resolve([]);
+        resolve(stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).slice(0, 12));
+      });
+    });
+    return { status, names };
   });
 
   allowMedia();
