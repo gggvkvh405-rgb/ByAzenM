@@ -1164,16 +1164,45 @@ async function start() {
 
   setInterval(() => store.sweepExpired(), 15_000).unref?.();
 
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-    if (process.env.CBOPKA_OPEN_BROWSER === '1') {
-      const url = `http://127.0.0.1:${PORT}`;
+  const boundPort = await listenWithFallback(server, PORT);
+  console.log(`Server running on http://0.0.0.0:${boundPort}`);
+  if (process.env.CBOPKA_OPEN_BROWSER === '1') {
+    const url = `http://127.0.0.1:${boundPort}`;
       const cmd = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
       import('child_process').then(({ exec }) => exec(cmd, () => {}));
     }
+  return boundPort;
+}
+
+function listenWithFallback(server, startPort, attempts = 20) {
+  return new Promise((resolve, reject) => {
+    let port = Number(startPort) || 3000;
+    let left = attempts;
+    const onError = (err) => {
+      if (err && err.code === 'EADDRINUSE' && left > 0) {
+        left -= 1;
+        const busy = port;
+        port += 1;
+        console.log(`Port ${busy} is busy, trying ${port}`);
+        setImmediate(() => server.listen(port, '0.0.0.0'));
+        return;
+      }
+      cleanup();
+      reject(err);
+    };
+    const onListening = () => {
+      cleanup();
+      const addr = server.address();
+      resolve(addr && addr.port ? addr.port : port);
+    };
+    const cleanup = () => {
+      server.removeListener('error', onError);
+      server.removeListener('listening', onListening);
+    };
+    server.on('error', onError);
+    server.on('listening', onListening);
+    server.listen(port, '0.0.0.0');
   });
-
-
 }
 
 const invoked = String(process.argv[1] || '').replace(/\\/g, '/');

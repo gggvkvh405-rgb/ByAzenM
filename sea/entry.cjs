@@ -42,11 +42,11 @@ function writeHost(status, url) {
   } catch {}
 }
 
-start().then(() => {
+start().then((boundPort) => {
   if (process.env.CBOPKA_NO_TUNNEL === '1') return;
   writeHost('Открываем адрес для друга…');
   startPublicHost({
-    port: Number(process.env.PORT || 3000),
+    port: Number(boundPort || process.env.PORT || 3000),
     cacheDir: process.env.DATA_DIR,
     onStatus: (s) => writeHost(s)
   }).then((handle) => {

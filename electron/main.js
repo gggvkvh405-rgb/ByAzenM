@@ -2,6 +2,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, globalShortcut, 
 const path = require('path');
 const fs = require('fs');
 const { fork, exec } = require('child_process');
+const net = require('net');
 const { startPublicHost } = require('./tunnel');
 
 let mainWindow = null;
@@ -11,6 +12,7 @@ let serverProcess = null;
 let stopTunnel = () => {};
 let refreshTray = () => {};
 let publicUrl = '';
+let activePort = 3000;
 const DEFAULT_PORT = 3000;
 
 function configPath() { return path.join(app.getPath('userData'), 'cbopka-config.json'); }
@@ -65,7 +67,17 @@ function errorHtml(message) {
   return `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html><head><meta charset="utf-8"><title>Cbopka</title></head>
   <body style="margin:0;height:100vh;display:grid;place-items:center;background:#0c0d11;color:#f6f1e8;font-family:Segoe UI,sans-serif;padding:24px">
   <div style="max-width:520px"><h1>Сервер не поднялся</h1><p style="color:#a39c92">${String(message).replace(/[<>]/g, '')}</p>
-  <p>Это не чёрный экран: окно живо. Проверьте, что порт 3000 свободен, и откройте приложение ещё раз.</p></div></body></html>`)}`;
+  <p>Это не чёрный экран: окно живо. Закройте вторую копию Cbopka и откройте приложение ещё раз.</p></div></body></html>`)}`;
+}
+
+function findFreePort(start = DEFAULT_PORT, left = 20) {
+  return new Promise((resolve) => {
+    if (left < 0) { resolve(start); return; }
+    const probe = net.createServer();
+    probe.once('error', () => findFreePort(start + 1, left - 1).then(resolve));
+    probe.once('listening', () => probe.close(() => resolve(start)));
+    probe.listen(start, '0.0.0.0');
+  });
 }
 
 function startLocalServer() {
@@ -74,11 +86,13 @@ function startLocalServer() {
   const userData = app.getPath('userData');
   console.log('Server entry:', serverEntry, 'exists:', fs.existsSync(serverEntry));
   console.log('Client dist:', clientDist);
-  return new Promise((resolve, reject) => {
+  return findFreePort().then((port) => new Promise((resolve, reject) => {
+    activePort = port;
+    console.log('Using port', port);
     const env = {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
-      PORT: String(DEFAULT_PORT),
+      PORT: String(activePort),
       CLIENT_DIST_PATH: clientDist,
       DATA_DIR: userData,
       UPLOAD_DIR: path.join(userData, 'uploads'),
@@ -102,7 +116,9 @@ function startLocalServer() {
       const msg = buf.toString();
       output += msg;
       console.log('[server]', msg.trim());
-      if (msg.includes('Server running') && !started) { clearTimeout(timeout); done(); }
+      const bound = output.match(/Server running on http:\/\/0\.0\.0\.0:(\d+)/);
+      if (bound) activePort = Number(bound[1]);
+      if (output.includes('Server running') && !started) { clearTimeout(timeout); done(); }
     };
     serverProcess.stdout?.on('data', onData);
     serverProcess.stderr?.on('data', (buf) => { output += buf.toString(); console.error('[server err]', buf.toString().trim()); });
@@ -111,12 +127,12 @@ function startLocalServer() {
       console.log('Server exited', code, output.slice(-800));
       if (!started && code) { clearTimeout(timeout); reject(new Error('Server exited ' + code + '\n' + output.slice(-800))); }
     });
-  });
+  }));
 }
 
 function createWindow() {
   const cfg = loadConfig();
-  const targetUrl = cfg.serverUrl || `http://127.0.0.1:${DEFAULT_PORT}`;
+  const targetUrl = cfg.serverUrl || `http://127.0.0.1:${activePort}`;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -175,7 +191,7 @@ function openPublicHost() {
   if (process.env.CBOPKA_NO_TUNNEL === '1') return;
   writeHostState('Открываем адрес для друга…');
   startPublicHost({
-    port: DEFAULT_PORT,
+    port: activePort,
     cacheDir: app.getPath('userData'),
     onStatus: (s) => writeHostState(s)
   }).then((handle) => {
@@ -256,7 +272,7 @@ function toggleOverlay() {
     }
   });
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
-  overlayWindow.loadURL(`http://127.0.0.1:${DEFAULT_PORT}/?overlay=1`);
+  overlayWindow.loadURL(`http://127.0.0.1:${activePort}/?overlay=1`);
 }
 
 const GAMES = [
