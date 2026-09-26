@@ -3,6 +3,7 @@ import { origin } from '../lib/api.js';
 import { applyNoiseGate, tryRnnoise, screenConstraints, virtualBackgroundTrack, openWebTransport } from '../lib/media.js';
 import { chime } from '../lib/sounds.js';
 import { reopenMicPrompt, openMicStream } from '../lib/mic.js';
+import { createCallRelay, primeAudio } from '../lib/callRelay.js';
 
 export function useCall(socket, me) {
   const pcs = useRef(new Map());
@@ -31,6 +32,10 @@ export function useCall(socket, me) {
   const [strokes, setStrokes] = useState([]);
   const [drawOn, setDrawOn] = useState(false);
   const [voiceChannel, setVoiceChannel] = useState(null);
+  const [micMissing, setMicMissing] = useState(false);
+  const [viaServer, setViaServer] = useState(false);
+  const relayRef = useRef(null);
+  const mutedRef = useRef(false);
 
   useEffect(() => { callRef.current = call; }, [call]);
 
@@ -76,7 +81,7 @@ export function useCall(socket, me) {
     if (pcs.current.has(peerId)) return pcs.current.get(peerId);
     const pc = new RTCPeerConnection({ iceServers: iceRef.current });
     const stream = localRef.current;
-    stream?.getTracks().forEach((t) => pc.addTrack(t, stream));
+    stream?.getTracks().forEach((t) => { if (t.kind !== 'audio') pc.addTrack(t, stream); });
     pc.onicecandidate = (e) => {
       if (!e.candidate) return;
       const c = callRef.current;
@@ -122,7 +127,29 @@ export function useCall(socket, me) {
     }
   }
 
+  function relay() {
+    if (!relayRef.current && socket) {
+      relayRef.current = createCallRelay(socket, () => {
+        const c = callRef.current;
+        if (!c?.id) return null;
+        if (c.voice) return { id: c.channelId, event: 'voice:audio', key: 'channelId' };
+        return { id: c.id, event: 'call:audio', key: 'callId' };
+      }, () => mutedRef.current);
+    }
+    return relayRef.current;
+  }
+
+  function beginRelay() {
+    try {
+      primeAudio();
+      relay()?.start(localRef.current);
+      setViaServer(true);
+    } catch {}
+  }
+
   function closePcs() {
+    try { relayRef.current?.stop(); } catch {}
+    setViaServer(false);
     for (const pc of pcs.current.values()) { try { pc.close(); } catch {} }
     pcs.current.clear();
     localRef.current?.getTracks().forEach((t) => t.stop());
@@ -163,10 +190,13 @@ export function useCall(socket, me) {
     const onVoiceJoined = async ({ channelId, existing }) => {
       await ensureIce();
       if (!localRef.current) {
-        try { await grabMedia('audio'); }
-        catch { socket.emit('voice:leave', { channelId }); return; }
+        try { await grabMedia('audio'); setMicMissing(false); }
+        catch { setMicMissing(true); reopenMicPrompt(); }
       }
-      setCall({ id: channelId, voice: true, channelId, type: 'audio', phase: 'active', startedAt: Date.now() });
+      const next = { id: channelId, voice: true, channelId, type: 'audio', phase: 'active', startedAt: Date.now() };
+      callRef.current = next;
+      setCall(next);
+      beginRelay();
       setVoiceChannel(channelId);
       for (const id of existing || []) {
         if (id !== me.id) await createOffer(id);
@@ -230,18 +260,19 @@ export function useCall(socket, me) {
     if (!toUserId && !channelId) throw new Error('Сначала откройте чат с другом.');
     await ensureIce();
     let used = type === 'audio' ? 'audio' : 'video';
+    let micOk = true;
     try {
       await grabMedia(used);
     } catch {
       if (used === 'video') {
         try { await grabMedia('audio'); used = 'audio'; }
-        catch { reopenMicPrompt(); throw new Error('Нет доступа к микрофону. Нажмите «Разрешить» в окне Cbopka.'); }
-      } else {
-        reopenMicPrompt();
-        throw new Error('Нет доступа к микрофону. Нажмите «Разрешить» в окне Cbopka.');
-      }
+        catch { micOk = false; }
+      } else micOk = false;
     }
+    setMicMissing(!micOk);
+    if (!micOk) reopenMicPrompt();
     setCamOff(used === 'audio');
+    mutedRef.current = ptt;
     setMuted(ptt);
     if (ptt) localRef.current?.getAudioTracks().forEach((t) => { t.enabled = false; });
     let ack;
@@ -258,23 +289,32 @@ export function useCall(socket, me) {
       releasePreview();
       throw e;
     }
-    setCall({ id: ack.callId, toUserId, channelId, type: used, phase: 'ringing', startedAt: Date.now() });
-    return { type: used, warning: ack.warning || '' };
+    const next = { id: ack.callId, toUserId, channelId, type: used, phase: 'ringing', startedAt: Date.now() };
+    callRef.current = next;
+    setCall(next);
+    beginRelay();
+    return { type: used, warning: ack.warning || '', micOk };
   }
 
   async function acceptCall() {
     if (!incoming) throw new Error('Звонок уже завершён');
     if (!socket?.connected) throw new Error('Нет связи с сервером');
     await ensureIce();
+    let micOk = true;
     try {
       await grabMedia(incoming.type === 'audio' ? 'audio' : 'video');
     } catch {
       try { await grabMedia('audio'); }
-      catch { reopenMicPrompt(); throw new Error('Нет доступа к микрофону. Нажмите «Разрешить» в окне Cbopka.'); }
+      catch { micOk = false; reopenMicPrompt(); }
     }
-    setCall({ id: incoming.callId, type: incoming.type, phase: 'active', startedAt: Date.now(), peer: incoming.from });
+    setMicMissing(!micOk);
+    const next = { id: incoming.callId, type: incoming.type, phase: 'active', startedAt: Date.now(), peer: incoming.from };
+    callRef.current = next;
+    setCall(next);
     socket.emit('call:accept', { callId: incoming.callId });
     setIncoming(null);
+    beginRelay();
+    return { micOk };
   }
 
   function rejectCall() {
@@ -298,6 +338,7 @@ export function useCall(socket, me) {
 
   function toggleMute(force) {
     const next = force != null ? force : !muted;
+    mutedRef.current = next;
     setMuted(next);
     localRef.current?.getAudioTracks().forEach((t) => { t.enabled = !next; });
     const c = callRef.current;
@@ -454,8 +495,22 @@ export function useCall(socket, me) {
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
   }, [ptt, muted]);
 
+  useEffect(() => {
+    const onGranted = async () => {
+      if (!callRef.current) return;
+      try {
+        await grabMedia(callRef.current.type === 'video' ? 'video' : 'audio');
+        setMicMissing(false);
+        beginRelay();
+      } catch {}
+    };
+    window.addEventListener('cb-mic-granted', onGranted);
+    return () => window.removeEventListener('cb-mic-granted', onGranted);
+  }, [socket]);
+
   return {
     call, setCall, remotes, localStream: localRef, incoming, muted, camOff, sharing, recording, noise, setNoise,
+    micMissing, viaServer,
     bg, setBackground, hand, raiseHand, ptt, setPtt, pttHeld, quality, setQuality: applyQuality, reactions,
     peersState, stats, strokes, drawOn, setDrawOn, pushStroke, startCall, acceptCall, rejectCall, hangup,
     joinVoice, toggleMute, toggleCam, shareScreen, toggleRecord, sendReaction, voiceChannel

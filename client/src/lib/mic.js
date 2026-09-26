@@ -120,9 +120,10 @@ export async function requestMic() {
   for (let i = 0; i < 2; i++) {
     try {
       const stream = await openAudio(false);
-      stream.getTracks().forEach((t) => t.stop());
-      localStorage.setItem(KEY, 'granted');
-      return { ok: true };
+    stream.getTracks().forEach((t) => t.stop());
+    localStorage.setItem(KEY, 'granted');
+    try { window.dispatchEvent(new Event('cb-mic-granted')); } catch {}
+    return { ok: true };
     } catch (e) {
       last = e;
       await new Promise((r) => setTimeout(r, 350));

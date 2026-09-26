@@ -287,6 +287,10 @@ button { cursor: pointer; }
 .host-url { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; word-break: break-all; color: #6ee0c2; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; box-shadow: var(--shadow); min-width: 220px; }
 
+.call-fail {
+  margin: 8px 16px 0; background: #2a1712; color: #ffd7cc; border: 1px solid rgba(255,106,69,.45);
+  border-radius: 14px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between;
+}
 .call-bar {
   margin: 0 16px; background: #12160f; color: #e9ffe8; border-radius: 14px; padding: 8px 10px;
   display: flex; align-items: center; gap: 10px; border: 1px solid rgba(110,224,194,.3);

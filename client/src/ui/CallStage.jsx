@@ -18,7 +18,7 @@ function Tile({ stream, name, self, hand, muted, sharing }) {
   );
 }
 
-export default function CallStage({ call, me, localStream, remotes, peersState, muted, camOff, sharing, recording, hand, ptt, pttHeld, quality, stats, reactions, strokes, drawOn, onMute, onCam, onShare, onQuality, onRecord, onHand, onPtt, onReact, onHangup, onDrawToggle, onStroke, onBg, bg, noise, onNoise }) {
+export default function CallStage({ call, me, localStream, remotes, peersState, muted, camOff, sharing, recording, hand, ptt, pttHeld, quality, stats, reactions, strokes, drawOn, onMute, onCam, onShare, onQuality, onRecord, onHand, onPtt, onReact, onHangup, onDrawToggle, onStroke, onBg, bg, noise, onNoise, micMissing, viaServer }) {
   const [menu, setMenu] = useState(null);
   const canvasRef = useRef(null);
   const drawing = useRef(false);
@@ -72,9 +72,11 @@ export default function CallStage({ call, me, localStream, remotes, peersState, 
   return (
     <div className="stage">
       <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 18px', color: '#d9d3c8' }}>
-        <div>{call.voice ? 'Голосовой канал' : call.type === 'audio' ? 'Голосовой звонок' : 'Видеозвонок'} · {clock} · связь {stats}</div>
+        <div>{call.voice ? 'Голосовой канал' : call.type === 'audio' ? 'Голосовой звонок' : 'Видеозвонок'} · {clock} · {viaServer ? 'голос через сервер' : stats}</div>
         <div style={{ color: '#8d877e', fontSize: 13 }}>{ptt ? (pttHeld ? 'PTT: говорите' : 'PTT: удерживайте V') : 'открытый микрофон'}{noise ? ' · шумодав' : ''}</div>
       </div>
+      {call.phase === 'ringing' && <div className="call-fail">Ждём, пока друг нажмёт «Ответить». Он должен быть на вашей ссылке и в этом чате.</div>}
+      {micMissing && <div className="call-fail">Микрофон не открыт. Нажмите «Разрешить» в окне доступа, иначе вас не слышно.</div>}
       <div className="stage-grid" style={{ position: 'relative' }}>
         {tiles.map((t) => <Tile key={t.id} {...t} />)}
         <canvas ref={canvasRef} className="draw-layer" style={{ pointerEvents: drawOn ? 'auto' : 'none' }} onMouseDown={down} onMouseMove={move} onMouseUp={() => { drawing.current = false; }} />

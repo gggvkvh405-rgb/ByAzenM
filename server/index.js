@@ -1047,6 +1047,25 @@ async function start() {
       });
     }
 
+    socket.on('call:audio', ({ callId, chunk }) => {
+      if (!callId || typeof chunk !== 'string' || chunk.length > 24000) return;
+      const call = calls.get(callId);
+      if (!call || !call.participants.has(uid)) return;
+      for (const pid of call.participants) {
+        if (pid === uid) continue;
+        emitToUser(pid, 'call:audio', { callId, fromUserId: uid, chunk });
+      }
+    });
+    socket.on('voice:audio', ({ channelId, chunk }) => {
+      if (!channelId || typeof chunk !== 'string' || chunk.length > 24000) return;
+      const room = voiceRooms.get(channelId);
+      if (!room?.has(uid)) return;
+      for (const id of room.keys()) {
+        if (id === uid) continue;
+        emitToUser(id, 'voice:audio', { channelId, fromUserId: uid, chunk });
+      }
+    });
+
     socket.on('voice:join', ({ channelId }) => {
       const ch = store.getChannel(channelId);
       if (!ch || ch.type !== 'voice') return socket.emit('error_msg', { error: 'Это не голосовой канал' });

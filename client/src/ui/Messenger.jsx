@@ -9,7 +9,8 @@ import { dayLabel, timeShort, lastSeen, dmId, bytes, statusColor } from '../lib/
 import { soundsOn, setSounds } from '../lib/sounds.js';
 import { sha256 } from '../lib/crypto.js';
 import { QUALITY, waveformPeaks } from '../lib/media.js';
-import { ensureMic, reopenMicPrompt } from '../lib/mic.js';
+import { ensureMic } from '../lib/mic.js';
+import { primeAudio } from '../lib/callRelay.js';
 
 const EMOJI = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😅','😭','😡','👍','👎','👏','🔥','❤️','🧡','💛','💚','💙','💜','🖤','✨','🎉','✅','❌','👀','🤝','🙏','💯','⚡','🌙','☀️','🍀','🎵','📎','💬','🫡','🫠'];
 const STICKERS = ['🦊','🐙','🪐','🍋','🎧','🛹','🍵','🌵','🫧','🪩','🧸','🪁','🧿','🍄','🍒','🌊'];
@@ -54,6 +55,7 @@ export default function Messenger({ m, call }) {
   const [ttl, setTtl] = useState(0);
   const [recordingVoice, setRecordingVoice] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [callFail, setCallFail] = useState('');
   useEffect(() => {
     if (preferHome || groupId) return;
     const g = groups.find((x) => (x.channels || []).some((c) => c.id === activeId));
@@ -123,18 +125,19 @@ export default function Messenger({ m, call }) {
   }, [token]);
 
   async function ring(type) {
+    primeAudio();
     const toUserId = active?.kind === 'dm' ? active.peerId : null;
     const channelId = active?.kind === 'channel' ? active.id : null;
-    if (!toUserId && !channelId) { toast('Откройте чат с другом'); return; }
-    if (!await ensureMic()) { toast('Без микрофона звонок не начнётся'); return; }
+    if (!toUserId && !channelId) { setCallFail('Сначала откройте личный чат с другом.'); return; }
+    setCallFail('');
     try {
       const res = await call.startCall({ toUserId, channelId, type });
       setExpanded(true);
-      if (res?.warning) toast(res.warning);
-      else if (type === 'video' && res?.type === 'audio') toast('Камера недоступна — звоним голосом. Пусть друг нажмёт «Ответить»');
-      else toast(type === 'video' ? 'Видеозвонок пошёл. Пусть друг нажмёт «Ответить»' : 'Звоним… пусть друг нажмёт «Ответить»');
+      if (res?.warning) setCallFail(res.warning);
+      else if (!res?.micOk) setCallFail('Звонок идёт. Микрофон не открылся — друг услышит тишину, пока не нажмёте «Разрешить».');
+      else toast(type === 'video' ? 'Видеозвонок пошёл. Пусть друг нажмёт «Ответить»' : 'Звоним. Пусть друг нажмёт «Ответить»');
     } catch (e) {
-      toast(e.message || 'Звонок не начался');
+      setCallFail(e.message || 'Звонок не начался');
     }
   }
 
@@ -380,6 +383,12 @@ export default function Messenger({ m, call }) {
             </>
           ) : <div style={{ color: 'var(--muted)' }}>Выберите чат</div>}
         </header>
+        {callFail && (
+          <div className="call-fail">
+            <span>{callFail}</span>
+            <button className="btn" onClick={() => setCallFail('')}>Закрыть</button>
+          </div>
+        )}
 
         {call.call && !expanded && (
           <div className="call-bar">
@@ -553,17 +562,15 @@ export default function Messenger({ m, call }) {
 
       {palette && <Palette onClose={() => setPalette(false)} m={m} setModal={setModal} setActiveId={setActiveId} openDm={openDm} />}
       {call.incoming && (
-        <div className="incoming">
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-            <img className="avatar" src={call.incoming.from?.avatar} alt="" />
-            <div>
-              <b>{call.incoming.from?.username}</b>
-              <div style={{ color: 'var(--muted)', fontSize: 13 }}>{call.incoming.type === 'audio' ? 'Голосовой звонок' : 'Видеозвонок'}</div>
+        <div className="modal-back" style={{ zIndex: 92 }}>
+          <div className="modal mic-ask" onClick={(e) => e.stopPropagation()}>
+            <img className="avatar lg" src={call.incoming.from?.avatar} alt="" />
+            <h2 style={{ margin: '12px 0 6px' }}>{call.incoming.from?.username || 'Друг'} звонит</h2>
+            <p>{call.incoming.type === 'audio' ? 'Голосовой звонок' : 'Видеозвонок'}. Нажмите «Ответить», чтобы слышать друг друга.</p>
+            <div className="mic-ask-actions">
+              <button className="btn ember" onClick={async () => { primeAudio(); try { await call.acceptCall(); setExpanded(true); } catch (e) { setCallFail(e.message || 'Не удалось ответить'); } }}>Ответить</button>
+              <button className="btn danger" onClick={call.rejectCall}>Отклонить</button>
             </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn ember" onClick={async () => { if (!await ensureMic()) { toast('Сначала разрешите микрофон'); return; } try { await call.acceptCall(); setExpanded(true); } catch (e) { reopenMicPrompt(); toast(e.message || 'Не удалось ответить'); } }}>Ответить</button>
-            <button className="btn danger" onClick={call.rejectCall}>Отклонить</button>
           </div>
         </div>
       )}
@@ -574,6 +581,7 @@ export default function Messenger({ m, call }) {
           ptt={call.ptt} pttHeld={call.pttHeld} quality={call.quality} stats={call.stats} reactions={call.reactions}
           strokes={call.strokes} drawOn={call.drawOn} bg={call.bg} noise={call.noise}
           onMute={() => call.toggleMute()} onCam={call.toggleCam} onShare={call.shareScreen} onQuality={call.setQuality}
+          micMissing={call.micMissing} viaServer={call.viaServer}
           onRecord={call.toggleRecord} onHand={call.raiseHand} onPtt={() => call.setPtt((v) => !v)} onReact={call.sendReaction}
           onHangup={() => { call.hangup(); setExpanded(false); }} onDrawToggle={() => call.setDrawOn((v) => !v)} onStroke={call.pushStroke}
           onBg={call.setBackground} onNoise={call.setNoise}
@@ -975,7 +983,7 @@ function ProfileCard({ person, m, call, onClose }) {
       <div style={{ color: 'var(--muted)' }}>{u.customEmoji} {u.customStatus || u.bio}</div>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button className="btn ember" onClick={() => { const id = dmId(m.user.id, u.id); m.setActiveId(id); onClose(); }}>Написать</button>
-        <button className="btn" onClick={async () => { if (!await ensureMic()) { m.toast('Сначала разрешите микрофон'); return; } try { await call.startCall({ toUserId: u.id, type: 'audio' }); onClose(); } catch (e) { reopenMicPrompt(); m.toast(e.message || 'Звонок не начался'); } }}>Позвонить</button>
+        <button className="btn" onClick={async () => { primeAudio(); try { const res = await call.startCall({ toUserId: u.id, type: 'audio' }); onClose(); if (!res?.micOk) m.toast('Звонок идёт, микрофон пока не открылся'); } catch (e) { m.toast(e.message || 'Звонок не начался'); } }}>Позвонить</button>
         <button className="btn danger" onClick={async () => { await api('/api/users/' + u.id + '/block', { token: m.token, method: 'POST' }); m.toast('Заблокирован'); onClose(); }}>Блок</button>
       </div>
       {m.active?.group && (m.active.group.members?.[m.user.id] === 'admin' || (Array.isArray(m.active.group.members) && m.active.group.members.find((x) => x.id === m.user.id)?.role === 'admin')) && (
