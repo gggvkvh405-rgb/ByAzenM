@@ -39,25 +39,42 @@ async function audioInputs() {
   }
 }
 
+function release(stream) {
+  stream?.getTracks?.().forEach((t) => { try { t.stop(); } catch {} });
+}
+
+function wait(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function tryOnce(constraints) {
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  if (stream.getAudioTracks().length) return stream;
+  release(stream);
+  const err = new Error('no-audio');
+  err.name = 'NotFoundError';
+  throw err;
+}
+
 async function openAudio(extra = false) {
   const inputs = await audioInputs();
-  const attempts = [
-    { audio: true, video: extra || false },
-    { audio: true, video: false },
-    { audio: { deviceId: 'default' }, video: false },
-    { audio: { deviceId: 'communications' }, video: false }
-  ];
-  for (const d of inputs) {
-    if (d.deviceId) attempts.push({ audio: { deviceId: { ideal: d.deviceId } }, video: false });
+  const virtual = /virtual|steam|obs|stereo mix|cable|blackhole|vb-audio|nvidia broadcast/i;
+  const real = inputs.filter((d) => d.deviceId && !virtual.test(d.label || ''));
+  const rest = inputs.filter((d) => d.deviceId && !real.includes(d));
+  const plain = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+  const attempts = [{ audio: plain, video: false }];
+  for (const d of [...real, ...rest]) {
+    attempts.push({ audio: { ...plain, deviceId: { exact: d.deviceId } }, video: false });
   }
+  attempts.push({ audio: true, video: false });
+  if (extra) attempts.push({ audio: plain, video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
   let last;
   for (const constraints of attempts) {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (stream.getAudioTracks().length) return stream;
-      stream.getTracks().forEach((t) => t.stop());
+      return await tryOnce(constraints);
     } catch (e) {
       last = e;
+      await wait(500);
     }
   }
   if (last) throw last;
@@ -83,10 +100,11 @@ function explain(e, inputs, osNames) {
     };
   }
   if (busy) {
+    const names = seen.length ? ` Видит: ${seen.slice(0, 3).join(', ')}.` : '';
     return {
       denied: false,
-      settings: 'sound',
-      error: 'Микрофон занят другой программой. Закройте Discord, Zoom или браузер с звонком и нажмите «Разрешить» ещё раз.'
+      settings: 'recording',
+      error: `Windows не открыла микрофон.${names} Сейчас откроется список записи. Выберите микрофон, нажмите «По умолчанию», затем «Свойства → Дополнительно» и снимите обе галочки «Монопольный режим». Если микрофон реально занят Discord или Zoom — закройте их и нажмите «Разрешить» ещё раз.`
     };
   }
   if (missing || !inputs.length) {
@@ -138,7 +156,9 @@ export async function requestMic() {
   if (api?.openMicSettings && (info.settings === 'privacy' || info.denied || !inputs.length)) {
     try { await api.openMicSettings(); } catch {}
   }
-  if (api?.openSoundSettings && info.settings === 'sound') {
+  if (api?.openRecordingPanel && info.settings === 'recording') {
+    try { await api.openRecordingPanel(); } catch {}
+  } else if (api?.openSoundSettings && info.settings === 'sound') {
     try { await api.openSoundSettings(); } catch {}
   }
   return { ok: false, ...info, devices: inputs.map((d) => d.label).filter(Boolean), osNames };

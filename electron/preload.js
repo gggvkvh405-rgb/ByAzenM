@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('cbopkaAPI', {
   resetMicrophone: () => ipcRenderer.invoke('reset-microphone'),
   openMicSettings: () => ipcRenderer.invoke('open-mic-settings'),
   openSoundSettings: () => ipcRenderer.invoke('open-sound-settings'),
+  openRecordingPanel: () => ipcRenderer.invoke('open-recording-panel'),
   listMics: () => ipcRenderer.invoke('list-mics'),
   platform: process.platform,
   onHotkey: (cb) => ipcRenderer.on('hotkey', (_e, name) => cb(name)),

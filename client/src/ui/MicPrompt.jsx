@@ -57,6 +57,7 @@ export default function MicPrompt() {
         {err && <p className="mic-ask-err">{err}</p>}
         <div className="mic-ask-actions">
           <button className="btn ember" disabled={busy} onClick={allow}>{busy ? 'Ищем микрофон…' : 'Разрешить'}</button>
+          {err && <button className="btn" onClick={() => window.cbopkaAPI?.openRecordingPanel?.()}>Устройства записи</button>}
           {err && <button className="btn" onClick={() => openMicSettings()}>Доступ Windows</button>}
           {err && <button className="btn" onClick={() => openSoundSettings()}>Звук</button>}
           <button className="btn" disabled={busy} onClick={later}>Не сейчас</button>

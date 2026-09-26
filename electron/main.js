@@ -16,7 +16,10 @@ let activePort = 3000;
 let mediaConsent = false;
 const DEFAULT_PORT = 3000;
 
-if (process.platform === 'win32') app.setAppUserModelId('com.cbopka.desktop');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.cbopka.desktop');
+  app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess,AudioServiceSandbox');
+}
 
 function configPath() { return path.join(app.getPath('userData'), 'cbopka-config.json'); }
 function loadConfig() {
@@ -390,6 +393,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('reset-microphone', () => { mediaConsent = false; return true; });
   ipcMain.handle('open-mic-settings', () => openWinSetting(process.platform === 'win32' ? 'ms-settings:privacy-microphone' : 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'));
   ipcMain.handle('open-sound-settings', () => openWinSetting(process.platform === 'win32' ? 'ms-settings:sound' : 'x-apple.systempreferences:com.apple.preference.sound'));
+  ipcMain.handle('open-recording-panel', () => new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve(false);
+    exec('control mmsys.cpl,,1', { windowsHide: true }, (err) => resolve(!err));
+  }));
   ipcMain.handle('list-mics', async () => {
     let status = 'unknown';
     try { status = systemPreferences.getMediaAccessStatus('microphone'); } catch {}
