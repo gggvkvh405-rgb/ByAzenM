@@ -1,0 +1,18 @@
+{
+  "name": "cbopka",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Cbopka 2.0 — messenger with a native window, not a browser tab.",
+  "scripts": {
+    "install:all": "npm install --prefix client && npm install --prefix server",
+    "build": "npm run build --prefix client",
+    "start": "node server/index.js",
+    "dev": "npm run dev --prefix client",
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "desktop": "npm start --prefix electron"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

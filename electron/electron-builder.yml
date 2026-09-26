@@ -1,0 +1,37 @@
+appId: com.cbopka.desktop
+productName: Cbopka
+copyright: Copyright © 2026 Cbopka
+directories:
+  output: ../release
+  buildResources: .
+files:
+  - main.js
+  - preload.js
+  - package.json
+  - tray.png
+  - icon.png
+extraResources:
+  - from: server-bundle.cjs
+    to: server-bundle.cjs
+  - from: ../client/dist
+    to: client-dist
+asar: true
+npmRebuild: false
+win:
+  icon: icon.ico
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: Cbopka-${version}-portable.exe
+portable:
+  artifactName: Cbopka-${version}-portable.exe
+linux:
+  icon: icon.png
+  target:
+    - dir
+  artifactName: Cbopka-${version}-${arch}.${ext}
+mac:
+  icon: icon.png
+  target:
+    - dir
