@@ -48,6 +48,18 @@ jobs:
             --external:@sentry/node --external:mediasoup --external:web-push
           ls -lh electron/server-bundle.cjs sea/sea-bundle.cjs
 
+      - name: Build microphone helper
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio C++ tools not found" }
+          $bat = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          cmd /c "call `"$bat`" && cl /nologo /O2 /EHsc /W3 /DUNICODE /D_UNICODE /Fe:electron\CbopkaMic.exe electron\mic-capture.cpp /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup user32.lib gdi32.lib ole32.lib winmm.lib ws2_32.lib uuid.lib"
+          if (-not (Test-Path electron\CbopkaMic.exe)) { throw "CbopkaMic.exe was not built" }
+          Copy-Item electron\CbopkaMic.exe electron\CbopkaMic.bin -Force
+          Get-Item electron\CbopkaMic.bin | Format-List FullName, Length
+
       - name: Build Electron portable exe
         shell: bash
         run: |

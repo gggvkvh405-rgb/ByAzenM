@@ -29,7 +29,9 @@ export default function MicPrompt() {
           const v = s > 32767 ? s - 65536 : s;
           if (Math.abs(v) > peak) peak = Math.abs(v);
         }
-        setLevel(Math.min(100, Math.round((peak / 32768) * 100)));
+        const next = Math.min(100, Math.round((peak / 32768) * 100));
+        window.__cbMicLevel = next;
+        setLevel(next);
       } catch {}
     });
     return () => window.cbopkaAPI.offNativePcm?.(id);
@@ -59,8 +61,16 @@ export default function MicPrompt() {
     const res = await requestMic();
     setBusy(false);
     if (res.ok) {
-      setNote(res.device ? `Микрофон открыт: ${res.device}. Можно звонить.` : 'Микрофон открыт. Можно звонить.');
-      setTimeout(() => finish(true), 1200);
+      setNote('Микрофон открыт. Скажите слово — если полоска двигается, вас слышно.');
+      const started = Date.now();
+      const wait = setInterval(() => {
+        const heard = Number(window.__cbMicLevel || 0) > 4;
+        if (heard) setNote('Вас слышно. Можно звонить — друг должен нажать «Ответить».');
+        if (heard || Date.now() - started > 7000) {
+          clearInterval(wait);
+          setTimeout(() => finish(true), heard ? 900 : 400);
+        }
+      }, 200);
       return;
     }
     setErr(res.error || 'Не удалось получить микрофон');
@@ -77,7 +87,7 @@ export default function MicPrompt() {
       <div className="modal mic-ask" onClick={(e) => e.stopPropagation()}>
         <div className="mic-ask-icon"><MicMark /></div>
         <h2 id="mic-title">Доступ к микрофону</h2>
-        <p>Cbopka запрашивает микрофон, чтобы вас было слышно в звонке. Нажмите «Разрешить». Если Windows спросит про PowerShell — нажмите «Да».</p>
+        <p>Нажмите «Разрешить». Появится маленькое окно Cbopka — это микрофон, его не закрывайте. Скажите слово: полоска должна сдвинуться. Если Windows спросит доступ — нажмите «Да».</p>
         {note && <p className="mic-ask-ok">{note}</p>}
         {(busy || level > 0) && <div className="mic-level" aria-hidden="true"><span style={{ width: `${level}%` }} /></div>}
         {err && <p className="mic-ask-err">{err}</p>}

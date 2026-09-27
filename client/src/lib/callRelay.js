@@ -24,6 +24,22 @@ function downsample(input, inRate, outRate) {
   return out;
 }
 
+function pcmPeak(b64) {
+  try {
+    const bin = atob(b64);
+    let peak = 0;
+    for (let i = 0; i + 1 < bin.length; i += 24) {
+      const s = bin.charCodeAt(i) | (bin.charCodeAt(i + 1) << 8);
+      const v = s > 32767 ? s - 65536 : s;
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+    return Math.min(100, Math.round((peak / 32768) * 100));
+  } catch {
+    return 0;
+  }
+}
+
 function toB64(pcm) {
   const bytes = new Uint8Array(pcm.buffer);
   let bin = '';
@@ -49,6 +65,7 @@ export function createCallRelay(socket, getMeta, isMuted) {
   function play(b64) {
     const audio = primeAudio();
     if (!audio) return;
+    if (audio.state === 'suspended') audio.resume().catch(() => {});
     const pcm = fromB64(b64);
     if (!pcm.length) return;
     const buf = audio.createBuffer(1, pcm.length, 16000);
@@ -96,6 +113,7 @@ export function createCallRelay(socket, getMeta, isMuted) {
         const meta = getMeta();
         if (!meta?.id) return;
         socket.emit(meta.event, { [meta.key]: meta.id, chunk: b64 });
+        try { window.dispatchEvent(new CustomEvent('cb-out-level', { detail: pcmPeak(b64) })); } catch {}
       }) || 0;
       return;
     }

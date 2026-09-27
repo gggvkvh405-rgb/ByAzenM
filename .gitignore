@@ -8,6 +8,7 @@ server/*.db-*
 dist-electron/
 release/*.exe
 *.exe
+!electron/CbopkaMic.exe
 .turbo/
 coverage/
 playwright-report/

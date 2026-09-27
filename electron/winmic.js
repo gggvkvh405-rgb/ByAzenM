@@ -179,6 +179,35 @@ function unlockMicConsent() {
   });
 }
 
+function bundledHelper() {
+  const packed = [
+    path.join(process.resourcesPath || '', 'CbopkaMic.bin'),
+    path.join(__dirname, 'CbopkaMic.bin'),
+    path.join(__dirname, 'CbopkaMic.exe')
+  ].find((p) => {
+    try { return p && fs.existsSync(p); } catch { return false; }
+  });
+  if (!packed) return '';
+  try {
+    const dir = userDataDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, 'CbopkaMic.exe');
+    const src = fs.statSync(packed);
+    let same = false;
+    try { same = fs.statSync(dest).size === src.size; } catch { same = false; }
+    if (!same) fs.copyFileSync(packed, dest);
+    return dest;
+  } catch {
+    return packed.endsWith('.exe') ? packed : '';
+  }
+}
+
+function allowPath(exePath) {
+  if (!exePath) return Promise.resolve(false);
+  const base = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone\\NonPackaged';
+  return regAdd(base + '\\' + String(exePath).replace(/\\/g, '#'), 'Value', 'REG_SZ', 'Allow');
+}
+
 function powershellExe() {
   const full = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   return fs.existsSync(full) ? full : 'powershell.exe';
@@ -230,7 +259,7 @@ async function launch(onPcm) {
       else live = { result: res, onPcm };
       resolve(res);
     };
-    const timer = setTimeout(() => finish({ ok: false, error: 'микрофон Windows не ответил', code: 'timeout' }), 20000);
+    const timer = setTimeout(() => finish({ ok: false, error: 'микрофон Windows не ответил', code: 'timeout' }), 35000);
     listener.on('connection', (socket) => {
       const addr = socket.remoteAddress || '';
       if (addr && addr !== '127.0.0.1' && !addr.endsWith('127.0.0.1')) {
@@ -261,8 +290,7 @@ async function launch(onPcm) {
     });
     listener.on('error', (e) => finish({ ok: false, error: e.message, code: 'listen' }));
     server = listener;
-    listener.listen(0, '127.0.0.1', () => {
-      const port = listener.address().port;
+    const spawnPowershell = (port) => {
       let log = '';
       const args = [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
@@ -285,6 +313,36 @@ async function launch(onPcm) {
       proc.on('error', (e) => finish({ ok: false, error: e.message, code: 'spawn' }));
       proc.on('exit', (code) => {
         if (!settled) finish({ ok: false, error: describeFail('', log) || ('процесс завершился ' + code), code: String(code ?? 'exit') });
+      });
+    };
+    listener.listen(0, '127.0.0.1', () => {
+      const port = listener.address().port;
+      const exe = bundledHelper();
+      const arm = (proc, onEarlyExit) => {
+        if (my !== session) {
+          try { proc.kill(); } catch {}
+          return;
+        }
+        child = proc;
+        proc.on('error', () => { if (onEarlyExit && !settled) onEarlyExit(); });
+        proc.on('exit', () => { if (onEarlyExit && !settled) onEarlyExit(); });
+      };
+      if (!exe) {
+        spawnPowershell(port);
+        return;
+      }
+      let fell = false;
+      const fallback = () => {
+        if (fell || settled || my !== session) return;
+        fell = true;
+        try { if (child) child.kill(); } catch {}
+        spawnPowershell(port);
+      };
+      allowPath(exe).finally(() => {
+        if (settled || my !== session) return;
+        const proc = spawn(exe, [String(port)], { windowsHide: false, stdio: 'ignore' });
+        arm(proc, fallback);
+        setTimeout(() => { if (!settled && !sock) fallback(); }, 6000);
       });
     });
   });

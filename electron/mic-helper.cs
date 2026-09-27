@@ -28,8 +28,6 @@ public class CbopkaMic {
     if (client == null) return;
     ns = client.GetStream();
     try {
-      RelaxCaptureDevices();
-      Thread.Sleep(300);
       string wasapi = null;
       string wave = null;
       if (TryWasapi(out wasapi)) {
@@ -145,6 +143,18 @@ public class CbopkaMic {
     err = "1";
     try {
       IMMDeviceEnumerator en = (IMMDeviceEnumerator)(new MMDeviceEnumeratorCom());
+      IMMDeviceCollection list = null;
+      if (en.EnumAudioEndpoints(1, 1, out list) == 0 && list != null) {
+        uint count = 0;
+        list.GetCount(out count);
+        for (uint i = 0; i < count && i < 8; i++) {
+          IMMDevice item = null;
+          if (list.Item(i, out item) != 0 || item == null) continue;
+          string one;
+          if (OpenClient(item, true, out one) || OpenClient(item, false, out one)) return true;
+          err = one;
+        }
+      }
       int[] roles = new int[] { 0, 2, 1 };
       for (int r = 0; r < roles.Length; r++) {
         IMMDevice dev = null;
@@ -252,7 +262,7 @@ public class CbopkaMic {
       int bytes = (int)frames * capAlign;
       if (bytes < 0) bytes = 0;
       byte[] raw = new byte[bytes];
-      if (bytes > 0 && data != IntPtr.Zero && (flags & 2) == 0) Marshal.Copy(data, raw, 0, bytes);
+      if (bytes > 0 && data != IntPtr.Zero) Marshal.Copy(data, raw, 0, bytes);
       capture.ReleaseBuffer(frames);
       try {
         if (bytes > 0) PushPcm(To16k(raw, (int)frames, capChannels, capRate, capBits, capFloat));
@@ -278,25 +288,33 @@ public class CbopkaMic {
   static IntPtr hwi = IntPtr.Zero;
   static IntPtr[] headers;
   static GCHandle[] pins;
-  static WaveInProc waveProc;
-  static readonly object waveGate = new object();
-  static Queue<byte[]> waveQ = new Queue<byte[]>();
+  static IntPtr waveEvent = IntPtr.Zero;
 
   static bool TryWave(out string err) {
     err = "1";
-    waveProc = OnWave;
-    uint[] rates = new uint[] { 48000, 44100, 16000 };
-    ushort[] chs = new ushort[] { 2, 1 };
-    for (int ri = 0; ri < rates.Length; ri++) {
-      for (int ci = 0; ci < chs.Length; ci++) {
-        int code = TryOpen(-1, rates[ri], chs[ci]);
-        if (code != 0) { err = code.ToString(); continue; }
-        int started = waveInStart(hwi);
-        if (started != 0) { CleanupWave(); err = started.ToString(); continue; }
-        waveRate = (int)rates[ri];
-        waveChannels = chs[ci];
-        err = null;
-        return true;
+    int devices = 1;
+    try { devices = waveInGetNumDevs(); } catch { devices = 1; }
+    if (devices < 1) devices = 1;
+    int[] ids = new int[devices + 1];
+    ids[0] = -1;
+    for (int i = 0; i < devices; i++) ids[i + 1] = i;
+    uint[] rates = new uint[] { 48000, 44100, 16000, 22050 };
+    ushort[] chs = new ushort[] { 1, 2 };
+    int[] modes = new int[] { 0x00050000, 0 };
+    for (int d = 0; d < ids.Length; d++) {
+      for (int m = 0; m < modes.Length; m++) {
+        for (int ri = 0; ri < rates.Length; ri++) {
+          for (int ci = 0; ci < chs.Length; ci++) {
+            int code = TryOpen(ids[d], rates[ri], chs[ci], modes[m]);
+            if (code != 0) { err = code.ToString(); continue; }
+            int started = waveInStart(hwi);
+            if (started != 0) { CleanupWave(); err = started.ToString(); continue; }
+            waveRate = (int)rates[ri];
+            waveChannels = chs[ci];
+            err = null;
+            return true;
+          }
+        }
       }
     }
     return false;
@@ -304,34 +322,33 @@ public class CbopkaMic {
 
   static void PullWave(TcpClient client) {
     go = true;
-    while (go && client.Connected) {
-      byte[] frame = null;
-      lock (waveGate) {
-        if (waveQ.Count > 0) frame = waveQ.Dequeue();
-        else Monitor.Wait(waveGate, 200);
-      }
-      if (frame != null) {
-        int ch = waveChannels < 1 ? 1 : waveChannels;
-        PushPcm(To16k(frame, frame.Length / (ch * 2), ch, waveRate, 16, false));
+    int flagsOff = (int)Marshal.OffsetOf(typeof(WAVEHDR), "dwFlags");
+    int recOff = (int)Marshal.OffsetOf(typeof(WAVEHDR), "dwBytesRecorded");
+    int dataOff = (int)Marshal.OffsetOf(typeof(WAVEHDR), "lpData");
+    int hdrSize = Marshal.SizeOf(typeof(WAVEHDR));
+    while (go && client.Connected && hwi != IntPtr.Zero) {
+      if (waveEvent != IntPtr.Zero) WaitForSingleObject(waveEvent, 80);
+      else Thread.Sleep(20);
+      if (headers == null) break;
+      for (int i = 0; i < headers.Length; i++) {
+        if (headers[i] == IntPtr.Zero) continue;
+        int flags = Marshal.ReadInt32(headers[i], flagsOff);
+        if ((flags & 1) == 0) continue;
+        int recorded = Marshal.ReadInt32(headers[i], recOff);
+        IntPtr data = Marshal.ReadIntPtr(headers[i], dataOff);
+        if (recorded > 0 && data != IntPtr.Zero) {
+          byte[] copy = new byte[recorded];
+          Marshal.Copy(data, copy, 0, recorded);
+          int ch = waveChannels < 1 ? 1 : waveChannels;
+          try { PushPcm(To16k(copy, recorded / (ch * 2), ch, waveRate, 16, false)); } catch {}
+        }
+        waveInAddBuffer(hwi, headers[i], hdrSize);
       }
     }
   }
 
-  static void OnWave(IntPtr hw, uint msg, IntPtr inst, IntPtr p1, IntPtr p2) {
-    if (msg != 0x3C0 || p1 == IntPtr.Zero) return;
-    try {
-      int recorded = Marshal.ReadInt32(p1, IntPtr.Size == 8 ? 12 : 8);
-      IntPtr data = Marshal.ReadIntPtr(p1, 0);
-      if (recorded > 0 && data != IntPtr.Zero) {
-        byte[] copy = new byte[recorded];
-        Marshal.Copy(data, copy, 0, recorded);
-        lock (waveGate) { waveQ.Enqueue(copy); Monitor.Pulse(waveGate); }
-      }
-      waveInAddBuffer(hw, p1, Marshal.SizeOf(typeof(WAVEHDR)));
-    } catch {}
-  }
-
-  static int TryOpen(int deviceId, uint sampleRate, ushort ch) {
+  static int TryOpen(int deviceId, uint sampleRate, ushort ch, int mode) {
+    CleanupWave();
     WAVEFORMATEX fmt = new WAVEFORMATEX();
     fmt.wFormatTag = 1;
     fmt.nChannels = ch;
@@ -340,9 +357,14 @@ public class CbopkaMic {
     fmt.nBlockAlign = (ushort)(ch * 2);
     fmt.nAvgBytesPerSec = sampleRate * fmt.nBlockAlign;
     fmt.cbSize = 0;
+    IntPtr cb = IntPtr.Zero;
+    if (mode == 0x00050000) {
+      waveEvent = CreateEvent(IntPtr.Zero, false, false, null);
+      cb = waveEvent;
+    }
     IntPtr handle;
-    int openErr = waveInOpen(out handle, deviceId, ref fmt, waveProc, IntPtr.Zero, 0x00030000);
-    if (openErr != 0) return openErr;
+    int openErr = waveInOpenHandle(out handle, deviceId, ref fmt, cb, IntPtr.Zero, mode);
+    if (openErr != 0) { CleanupWave(); return openErr; }
     hwi = handle;
     int bytes = (int)(sampleRate * fmt.nBlockAlign / 10);
     if (bytes < 640) bytes = 640;
@@ -382,6 +404,7 @@ public class CbopkaMic {
       try { waveInClose(hwi); } catch {}
       hwi = IntPtr.Zero;
     }
+    if (waveEvent != IntPtr.Zero) { try { CloseHandle(waveEvent); } catch {} waveEvent = IntPtr.Zero; }
     if (pins != null) {
       for (int i = 0; i < pins.Length; i++) if (pins[i].IsAllocated) pins[i].Free();
     }
@@ -436,8 +459,16 @@ public class CbopkaMic {
   [DllImport("ole32.dll")]
   static extern int CoInitializeEx(IntPtr pv, uint dwCoInit);
 
+  [DllImport("winmm.dll", EntryPoint = "waveInOpen")]
+  static extern int waveInOpenHandle(out IntPtr phwi, int uDeviceID, ref WAVEFORMATEX pwfx, IntPtr dwCallback, IntPtr dwInstance, int fdwOpen);
   [DllImport("winmm.dll")]
-  static extern int waveInOpen(out IntPtr phwi, int uDeviceID, ref WAVEFORMATEX pwfx, WaveInProc dwCallback, IntPtr dwInstance, int fdwOpen);
+  static extern int waveInGetNumDevs();
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+  static extern IntPtr CreateEvent(IntPtr attr, bool manual, bool initial, string name);
+  [DllImport("kernel32.dll")]
+  static extern uint WaitForSingleObject(IntPtr handle, uint ms);
+  [DllImport("kernel32.dll")]
+  static extern bool CloseHandle(IntPtr handle);
   [DllImport("winmm.dll")]
   static extern int waveInPrepareHeader(IntPtr hwi, IntPtr pwh, int cbwh);
   [DllImport("winmm.dll")]
@@ -452,9 +483,6 @@ public class CbopkaMic {
   static extern int waveInUnprepareHeader(IntPtr hwi, IntPtr pwh, int cbwh);
   [DllImport("winmm.dll")]
   static extern int waveInClose(IntPtr hwi);
-
-  [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-  delegate void WaveInProc(IntPtr hwi, uint uMsg, IntPtr dwInstance, IntPtr dwParam1, IntPtr dwParam2);
 
   [StructLayout(LayoutKind.Sequential, Pack = 1)]
   struct WAVEFORMATEX {

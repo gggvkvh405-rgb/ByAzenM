@@ -16,6 +16,8 @@ files:
 extraResources:
   - from: server-bundle.cjs
     to: server-bundle.cjs
+  - from: CbopkaMic.bin
+    to: CbopkaMic.bin
   - from: ../client/dist
     to: client-dist
 asar: true
