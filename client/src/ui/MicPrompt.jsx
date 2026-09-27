@@ -77,7 +77,7 @@ export default function MicPrompt() {
       <div className="modal mic-ask" onClick={(e) => e.stopPropagation()}>
         <div className="mic-ask-icon"><MicMark /></div>
         <h2 id="mic-title">Доступ к микрофону</h2>
-        <p>Cbopka запрашивает микрофон, чтобы вас было слышно в звонке. Нажмите «Разрешить». Если Windows спросит про Cbopka или PowerShell — нажмите «Да».</p>
+        <p>Cbopka запрашивает микрофон, чтобы вас было слышно в звонке. Нажмите «Разрешить». Если Windows спросит про PowerShell — нажмите «Да».</p>
         {note && <p className="mic-ask-ok">{note}</p>}
         {(busy || level > 0) && <div className="mic-level" aria-hidden="true"><span style={{ width: `${level}%` }} /></div>}
         {err && <p className="mic-ask-err">{err}</p>}

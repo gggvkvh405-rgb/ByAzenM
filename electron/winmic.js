@@ -55,18 +55,22 @@ function describeFail(token, text) {
   if (/System\.Exception|\.cs\(|CS\d{4}|Add-Type|CompilerError/i.test(raw)) return 'захват Windows не собрался';
   const t = String(token || '').toUpperCase();
   const map = {
-    4: 'микрофон занят монопольным режимом',
+    1: 'драйвер не открыл микрофон',
+    4: 'микрофон занят другой программой',
     5: 'Windows запретила доступ к микрофону',
     6: 'нет драйвера записи',
     2: 'устройство записи не найдено',
     32: 'формат записи не подошёл',
-    '8889000A': 'микрофон занят монопольным режимом',
+    '8889000A': 'микрофон занят другой программой',
     '88890008': 'формат записи не подошёл',
-    '80070005': 'Windows запретила доступ к микрофону'
+    '8889000E': 'драйвер отказал в общем режиме',
+    '80070005': 'Windows запретила доступ к микрофону',
+    '80070057': 'драйвер не принял формат звука'
   };
   if (map[t]) return map[t];
+  if (/^(open|wave|wasapi|capture|mic)$/i.test(raw.trim())) return t && t !== '0' ? ('код ' + t) : 'микрофон не открылся';
   const line = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || '';
-  if (!line || /[^\x09\x0a\x0d\x20-\x7e\u0400-\u04FF]/.test(line)) return t ? ('код ' + t) : 'не открылся';
+  if (!line || /[^\x09\x0a\x0d\x20-\x7e\u0400-\u04FF]/.test(line)) return t && t !== '0' ? ('код ' + t) : 'микрофон не открылся';
   return line.slice(0, 140);
 }
 
@@ -81,15 +85,42 @@ function cscPath() {
   }) || '';
 }
 
-function compileDll(csPath, dir) {
+function compileHelper(csPath, dir) {
   const csc = cscPath();
   if (!csc) return Promise.resolve('');
   const hash = crypto.createHash('sha1').update(fs.readFileSync(csPath)).digest('hex').slice(0, 10);
   const dll = path.join(dir, 'CbopkaMic-' + hash + '.dll');
   if (fs.existsSync(dll)) return Promise.resolve(dll);
   return new Promise((resolve) => {
-    execFile(csc, ['/nologo', '/optimize+', '/warn:0', '/target:library', '/r:System.dll', '/utf8output', '/out:' + dll, csPath], { windowsHide: true, timeout: 20000 }, (err) => {
+    execFile(csc, [
+      '/nologo', '/optimize+', '/warn:0', '/target:library',
+      '/r:System.dll',
+      '/utf8output', '/out:' + dll, csPath
+    ], { windowsHide: true, timeout: 25000 }, (err) => {
       resolve(!err && fs.existsSync(dll) ? dll : '');
+    });
+  });
+}
+
+
+function likelyHolder() {
+  if (process.platform !== 'win32') return Promise.resolve('');
+  const known = [
+    [/voicemod/i, 'Voicemod'],
+    [/discord/i, 'Discord'],
+    [/zoom/i, 'Zoom'],
+    [/teams/i, 'Teams'],
+    [/skype/i, 'Skype'],
+    [/obs64|obs32/i, 'OBS'],
+    [/valorant-win64|valorant/i, 'Valorant'],
+    [/cs2|csgo/i, 'Counter-Strike'],
+    [/genshinimpact|yuanshen|genshin/i, 'Genshin Impact']
+  ];
+  return new Promise((resolve) => {
+    execFile('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 4000 }, (err, stdout) => {
+      const text = String(stdout || '');
+      const hit = known.find(([re]) => re.test(text));
+      resolve(hit ? hit[1] : '');
     });
   });
 }
@@ -183,7 +214,7 @@ async function launch(onPcm) {
     return { ok: false, error: e.message, code: 'missing' };
   }
   let dll = '';
-  try { dll = await compileDll(files.cs, files.dir); } catch { dll = ''; }
+  try { dll = await compileHelper(files.cs, files.dir); } catch { dll = ''; }
   return new Promise((resolve) => {
     const listener = net.createServer();
     let settled = false;
@@ -259,6 +290,7 @@ async function launch(onPcm) {
   });
 }
 
+
 function startNativeMic(onPcm) {
   if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: 'not-windows', code: 'platform' });
   if (live && child && !child.killed) {
@@ -275,7 +307,11 @@ function startNativeMic(onPcm) {
     const gap = 500 - (Date.now() - stoppedAt);
     if (stoppedAt && gap > 0) await sleep(gap);
     try { await unlockMicConsent(); } catch {}
-    return launch(onPcm);
+    const res = await launch(onPcm);
+    if (res && !res.ok && res.code !== 'stopped') {
+      try { res.holder = await likelyHolder(); } catch {}
+    }
+    return res;
   })().finally(() => { inflight = null; });
   return inflight;
 }

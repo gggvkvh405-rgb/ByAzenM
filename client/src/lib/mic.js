@@ -81,14 +81,13 @@ let nativeState = 'unknown';
 
 async function openWindowsMic() {
   const api = window.cbopkaAPI;
-  if (!api?.startNativeMic || api.platform !== 'win32' || nativeState === 'fail') return null;
+  if (!api?.startNativeMic || api.platform !== 'win32') return null;
   const n = await api.startNativeMic();
   if (n?.ok) {
     nativeState = 'ok';
     window.__cbNativeMic = true;
     return n;
   }
-  if (n?.code !== 'platform') nativeState = 'fail';
   window.__cbNativeMic = false;
   return n || null;
 }
@@ -137,12 +136,15 @@ function explain(e, inputs, osNames, nativeFail) {
     const names = seen.length ? ` Видит: ${seen.slice(0, 2).join(', ')}.` : '';
     const extra = nativeFail?.error ? ` ${nativeFail.error}.` : '';
     const compile = /не собрался/.test(nativeFail?.error || '');
+    const who = nativeFail?.holder
+      ? ` Сейчас микрофон может держать ${nativeFail.holder}. Закройте эту программу и нажмите «Разрешить» ещё раз.`
+      : ' Если открыты игра, Discord или Voicemod — закройте их и нажмите «Разрешить» ещё раз.';
     return {
       denied: false,
-      settings: compile ? 'none' : 'recording',
+      settings: 'none',
       error: compile
         ? `Микрофон на месте, но запасной захват не запустился.${names} Закройте программу полностью, включая трей, и откройте её ещё раз.`
-        : `Windows не отдала микрофон.${names}${extra} В списке записи: микрофон → Свойства → Дополнительно → снимите обе галочки «Монопольный режим» → ОК. Потом снова «Разрешить». Если спросит про PowerShell — нажмите Да.`
+        : `Микрофон виден, но Windows его не открыла.${names}${extra}${who}`
     };
   }
   if (missing || !inputs.length) {
@@ -234,11 +236,8 @@ export async function requestMic() {
   let osNames = [];
   try { osNames = (await api?.listMics?.())?.names || []; } catch {}
   const info = explain(last, inputs, osNames, native);
-  if (api?.openMicSettings && (info.settings === 'privacy' || info.denied || !inputs.length)) {
+  if (api?.openMicSettings && (info.settings === 'privacy' || info.denied)) {
     try { await api.openMicSettings(); } catch {}
-  }
-  if (api?.openRecordingPanel && info.settings === 'recording') {
-    try { await api.openRecordingPanel(); } catch {}
   } else if (api?.openSoundSettings && info.settings === 'sound') {
     try { await api.openSoundSettings(); } catch {}
   }

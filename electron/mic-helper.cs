@@ -9,38 +9,45 @@ public class CbopkaMic {
   static volatile bool go;
   static readonly object sendGate = new object();
   static List<byte> acc = new List<byte>();
-  static int waveRate;
-  static int waveChannels;
-  static string waveName = "mic";
-  static IntPtr hwi = IntPtr.Zero;
-  static IntPtr[] headers;
-  static GCHandle[] pins;
-  static WaveInProc waveProc;
-  static readonly object waveGate = new object();
-  static Queue<byte[]> waveQ = new Queue<byte[]>();
-
-  public static void Main(string[] args) {
-    int port = 0;
-    if (args.Length > 0) int.TryParse(args[0], out port);
-    if (port > 0) Run(port);
-  }
+  static int capRate = 48000;
+  static int capChannels = 2;
+  static int capBits = 32;
+  static int capAlign = 8;
+  static bool capFloat = true;
+  static IAudioClient audioClient;
+  static IAudioCaptureClient capture;
 
   public static void Run(int port) {
+    Capture(port);
+  }
+
+  static void Capture(int port) {
+    if (port <= 0) return;
+    try { CoInitializeEx(IntPtr.Zero, 0); } catch {}
     TcpClient client = Connect(port);
     if (client == null) return;
     ns = client.GetStream();
     try {
-      string err;
-      if (!TryWave(out err)) {
-        SendText("FAIL\t" + (err ?? "6") + "\twave");
+      RelaxCaptureDevices();
+      Thread.Sleep(300);
+      string wasapi = null;
+      string wave = null;
+      if (TryWasapi(out wasapi)) {
+        SendText("READY\twasapi\tdefault\t16000\t1");
+        PullWasapi(client);
         return;
       }
-      SendText("READY\twave\t" + Safe(waveName) + "\t" + waveRate + "\t" + waveChannels);
-      PullWave(client);
+      if (TryWave(out wave)) {
+        SendText("READY\twave\tdefault\t16000\t1");
+        PullWave(client);
+        return;
+      }
+      SendText("FAIL\t" + (wasapi ?? wave ?? "1") + "\topen");
     } catch (Exception ex) {
       try { SendText("FAIL\t0\t" + Safe(ex.Message)); } catch {}
     } finally {
       go = false;
+      StopWasapi();
       CleanupWave();
       try { client.Close(); } catch {}
     }
@@ -96,35 +103,200 @@ public class CbopkaMic {
     }
   }
 
+  static void RelaxCaptureDevices() {
+    try {
+      IMMDeviceEnumerator en = (IMMDeviceEnumerator)(new MMDeviceEnumeratorCom());
+      IMMDeviceCollection list = null;
+      int hr = en.EnumAudioEndpoints(1, 1, out list);
+      if (hr != 0 || list == null) return;
+      uint n = 0;
+      list.GetCount(out n);
+      for (uint i = 0; i < n && i < 8; i++) {
+        IMMDevice dev = null;
+        if (list.Item(i, out dev) == 0 && dev != null) Relax(dev);
+      }
+      IMMDevice def = null;
+      if (en.GetDefaultAudioEndpoint(1, 0, out def) == 0 && def != null) Relax(def);
+    } catch {}
+  }
+
+  static void Relax(IMMDevice dev) {
+    try {
+      IPropertyStore store = null;
+      if (dev.OpenPropertyStore(2, out store) != 0 || store == null) return;
+      SetDword(store, "B3F8FA53-0004-438E-9003-51A46E139BFC", 3, 0);
+      SetDword(store, "B3F8FA53-0004-438E-9003-51A46E139BFC", 4, 0);
+      SetDword(store, "1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E", 5, 1);
+      store.Commit();
+    } catch {}
+  }
+
+  static void SetDword(IPropertyStore store, string guid, uint pid, uint value) {
+    PROPERTYKEY key = new PROPERTYKEY();
+    key.fmtid = new Guid(guid);
+    key.pid = pid;
+    PROPVARIANT pv = new PROPVARIANT();
+    pv.vt = 19;
+    pv.ulVal = value;
+    store.SetValue(ref key, ref pv);
+  }
+
+  static bool TryWasapi(out string err) {
+    err = "1";
+    try {
+      IMMDeviceEnumerator en = (IMMDeviceEnumerator)(new MMDeviceEnumeratorCom());
+      int[] roles = new int[] { 0, 2, 1 };
+      for (int r = 0; r < roles.Length; r++) {
+        IMMDevice dev = null;
+        int hr = en.GetDefaultAudioEndpoint(1, roles[r], out dev);
+        if (hr != 0 || dev == null) { err = hr.ToString("X8"); continue; }
+        string one;
+        if (OpenClient(dev, true, out one)) return true;
+        err = one;
+        if (OpenClient(dev, false, out one)) return true;
+        err = one;
+      }
+    } catch (Exception ex) {
+      err = Safe(ex.Message);
+    }
+    return false;
+  }
+
+  static bool OpenClient(IMMDevice dev, bool mix, out string err) {
+    err = "1";
+    Guid iid = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
+    object obj = null;
+    int hr = dev.Activate(ref iid, 23, IntPtr.Zero, out obj);
+    if (hr != 0 || obj == null) { err = hr.ToString("X8"); return false; }
+    IAudioClient client = (IAudioClient)obj;
+    bool ready = mix ? InitMix(client, out err) : InitPcm16(client, out err);
+    if (!ready) { StopClient(client); return false; }
+    Guid capId = new Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
+    object capObj = null;
+    hr = client.GetService(ref capId, out capObj);
+    if (hr != 0 || capObj == null) { err = hr.ToString("X8"); StopClient(client); return false; }
+    capture = (IAudioCaptureClient)capObj;
+    hr = client.Start();
+    if (hr != 0) { err = hr.ToString("X8"); capture = null; StopClient(client); return false; }
+    audioClient = client;
+    return true;
+  }
+
+  static bool InitMix(IAudioClient client, out string err) {
+    err = null;
+    IntPtr mix = IntPtr.Zero;
+    int hr = client.GetMixFormat(out mix);
+    if (hr != 0 || mix == IntPtr.Zero) { err = hr.ToString("X8"); return false; }
+    ReadFormat(mix);
+    Guid empty = Guid.Empty;
+    hr = client.Initialize(0, 0, 0, 0, mix, ref empty);
+    Marshal.FreeCoTaskMem(mix);
+    if (hr != 0) { err = hr.ToString("X8"); return false; }
+    return true;
+  }
+
+  static bool InitPcm16(IAudioClient client, out string err) {
+    err = null;
+    IntPtr fmt = MakePcm16(16000, 1);
+    Guid empty = Guid.Empty;
+    int hr = client.Initialize(0, 0x88000000, 0, 0, fmt, ref empty);
+    Marshal.FreeHGlobal(fmt);
+    if (hr != 0) { err = hr.ToString("X8"); return false; }
+    capRate = 16000;
+    capChannels = 1;
+    capBits = 16;
+    capAlign = 2;
+    capFloat = false;
+    return true;
+  }
+
+  static void ReadFormat(IntPtr p) {
+    int tag = Marshal.ReadInt16(p, 0) & 0xffff;
+    capChannels = Marshal.ReadInt16(p, 2);
+    if (capChannels < 1) capChannels = 1;
+    capRate = Marshal.ReadInt32(p, 4);
+    if (capRate < 8000) capRate = 48000;
+    capAlign = Marshal.ReadInt16(p, 12) & 0xffff;
+    capBits = Marshal.ReadInt16(p, 14) & 0xffff;
+    capFloat = tag == 3 || (tag == 0xFFFE && capBits == 32);
+    if (capAlign <= 0) capAlign = capChannels * Math.Max(2, capBits / 8);
+  }
+
+  static IntPtr MakePcm16(int rate, int channels) {
+    IntPtr p = Marshal.AllocHGlobal(18);
+    for (int i = 0; i < 18; i++) Marshal.WriteByte(p, i, 0);
+    Marshal.WriteInt16(p, 0, 1);
+    Marshal.WriteInt16(p, 2, (short)channels);
+    Marshal.WriteInt32(p, 4, rate);
+    int align = channels * 2;
+    Marshal.WriteInt32(p, 8, rate * align);
+    Marshal.WriteInt16(p, 12, (short)align);
+    Marshal.WriteInt16(p, 14, 16);
+    return p;
+  }
+
+  static void PullWasapi(TcpClient client) {
+    go = true;
+    while (go && client.Connected) {
+      uint n = 0;
+      int hr = capture.GetNextPacketSize(out n);
+      if (hr != 0) break;
+      if (n == 0) { Thread.Sleep(10); continue; }
+      IntPtr data;
+      uint frames;
+      uint flags;
+      long devPos;
+      long qpc;
+      hr = capture.GetBuffer(out data, out frames, out flags, out devPos, out qpc);
+      if (hr != 0) break;
+      int bytes = (int)frames * capAlign;
+      if (bytes < 0) bytes = 0;
+      byte[] raw = new byte[bytes];
+      if (bytes > 0 && data != IntPtr.Zero && (flags & 2) == 0) Marshal.Copy(data, raw, 0, bytes);
+      capture.ReleaseBuffer(frames);
+      try {
+        if (bytes > 0) PushPcm(To16k(raw, (int)frames, capChannels, capRate, capBits, capFloat));
+      } catch {}
+    }
+  }
+
+  static void StopClient(IAudioClient client) {
+    try { if (client != null) client.Stop(); } catch {}
+    try { if (client != null) Marshal.ReleaseComObject(client); } catch {}
+  }
+
+  static void StopWasapi() {
+    try { if (audioClient != null) audioClient.Stop(); } catch {}
+    try { if (capture != null) Marshal.ReleaseComObject(capture); } catch {}
+    try { if (audioClient != null) Marshal.ReleaseComObject(audioClient); } catch {}
+    capture = null;
+    audioClient = null;
+  }
+
+  static int waveRate;
+  static int waveChannels = 1;
+  static IntPtr hwi = IntPtr.Zero;
+  static IntPtr[] headers;
+  static GCHandle[] pins;
+  static WaveInProc waveProc;
+  static readonly object waveGate = new object();
+  static Queue<byte[]> waveQ = new Queue<byte[]>();
+
   static bool TryWave(out string err) {
-    err = "6";
+    err = "1";
     waveProc = OnWave;
-    int count = 0;
-    try { count = waveInGetNumDevs(); } catch { count = 0; }
-    int[] ids = new int[count + 1];
-    ids[0] = -1;
-    for (int i = 0; i < count; i++) ids[i + 1] = i;
-    uint[] rates = new uint[] { 44100, 48000, 16000, 22050, 11025, 8000 };
-    ushort[] chs = new ushort[] { 1, 2 };
-    for (int pass = 0; pass < 2; pass++) {
-      for (int d = 0; d < ids.Length; d++) {
-        string label = ids[d] < 0 ? "default" : DevName(ids[d]);
-        bool virt = ids[d] >= 0 && IsVirtual(label);
-        if (pass == 0 && virt) continue;
-        if (pass == 1 && !virt) continue;
-        for (int ri = 0; ri < rates.Length; ri++) {
-          for (int ci = 0; ci < chs.Length; ci++) {
-            int code = TryOpen(ids[d], rates[ri], chs[ci]);
-            if (code != 0) { err = code.ToString(); continue; }
-            int started = waveInStart(hwi);
-            if (started != 0) { CleanupWave(); err = started.ToString(); continue; }
-            waveName = label;
-            waveRate = (int)rates[ri];
-            waveChannels = chs[ci];
-            err = null;
-            return true;
-          }
-        }
+    uint[] rates = new uint[] { 48000, 44100, 16000 };
+    ushort[] chs = new ushort[] { 2, 1 };
+    for (int ri = 0; ri < rates.Length; ri++) {
+      for (int ci = 0; ci < chs.Length; ci++) {
+        int code = TryOpen(-1, rates[ri], chs[ci]);
+        if (code != 0) { err = code.ToString(); continue; }
+        int started = waveInStart(hwi);
+        if (started != 0) { CleanupWave(); err = started.ToString(); continue; }
+        waveRate = (int)rates[ri];
+        waveChannels = chs[ci];
+        err = null;
+        return true;
       }
     }
     return false;
@@ -140,7 +312,7 @@ public class CbopkaMic {
       }
       if (frame != null) {
         int ch = waveChannels < 1 ? 1 : waveChannels;
-        PushPcm(To16k(frame, frame.Length / (ch * 2), ch, waveRate));
+        PushPcm(To16k(frame, frame.Length / (ch * 2), ch, waveRate, 16, false));
       }
     }
   }
@@ -174,10 +346,10 @@ public class CbopkaMic {
     hwi = handle;
     int bytes = (int)(sampleRate * fmt.nBlockAlign / 10);
     if (bytes < 640) bytes = 640;
-    headers = new IntPtr[4];
-    pins = new GCHandle[4];
+    headers = new IntPtr[3];
+    pins = new GCHandle[3];
     int hdrSize = Marshal.SizeOf(typeof(WAVEHDR));
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
       byte[] buf = new byte[bytes];
       pins[i] = GCHandle.Alloc(buf, GCHandleType.Pinned);
       WAVEHDR hdr = new WAVEHDR();
@@ -204,7 +376,6 @@ public class CbopkaMic {
           if (headers[i] != IntPtr.Zero) {
             try { waveInUnprepareHeader(hwi, headers[i], hdrSize); } catch {}
             Marshal.FreeHGlobal(headers[i]);
-            headers[i] = IntPtr.Zero;
           }
         }
       }
@@ -212,32 +383,16 @@ public class CbopkaMic {
       hwi = IntPtr.Zero;
     }
     if (pins != null) {
-      for (int i = 0; i < pins.Length; i++) {
-        if (pins[i].IsAllocated) pins[i].Free();
-      }
+      for (int i = 0; i < pins.Length; i++) if (pins[i].IsAllocated) pins[i].Free();
     }
     pins = null;
     headers = null;
   }
 
-  static string DevName(int id) {
-    try {
-      WAVEINCAPS caps = new WAVEINCAPS();
-      int n = waveInGetDevCaps(id, ref caps, Marshal.SizeOf(typeof(WAVEINCAPS)));
-      if (n == 0 && !string.IsNullOrEmpty(caps.szPname)) return caps.szPname;
-    } catch {}
-    return "mic";
-  }
-
-  static bool IsVirtual(string s) {
-    if (string.IsNullOrEmpty(s)) return false;
-    string t = s.ToLowerInvariant();
-    return t.IndexOf("virtual") >= 0 || t.IndexOf("voicemod") >= 0 || t.IndexOf("stereo mix") >= 0 || t.IndexOf("cable") >= 0;
-  }
-
-  static byte[] To16k(byte[] raw, int frames, int channels, int rate) {
+  static byte[] To16k(byte[] raw, int frames, int channels, int rate, int bits, bool floating) {
     if (raw == null || frames <= 0 || channels <= 0 || rate <= 0) return new byte[0];
-    int bps = 2;
+    int bps = bits / 8;
+    if (bps < 2) bps = 2;
     double ratio = (double)rate / 16000.0;
     int outFrames = (int)(frames / ratio);
     if (outFrames < 1) outFrames = 1;
@@ -251,9 +406,12 @@ public class CbopkaMic {
       int count = 0;
       for (int f = start; f < end; f++) {
         int off = f * channels * bps;
-        if (off + 1 >= raw.Length) break;
-        int sample = BitConverter.ToInt16(raw, off);
-        if (channels > 1 && off + 3 < raw.Length) sample = (sample + BitConverter.ToInt16(raw, off + 2)) / 2;
+        if (off + bps > raw.Length) break;
+        int sample = SampleAt(raw, off, bps, floating);
+        if (channels > 1) {
+          int off2 = off + bps;
+          if (off2 + bps <= raw.Length) sample = (sample + SampleAt(raw, off2, bps, floating)) / 2;
+        }
         sum += sample;
         count++;
       }
@@ -264,33 +422,34 @@ public class CbopkaMic {
     return outb;
   }
 
-  [DllImport("winmm.dll")]
-  static extern int waveInGetNumDevs();
+  static int SampleAt(byte[] raw, int off, int bps, bool floating) {
+    if (floating && bps >= 4) {
+      float f = BitConverter.ToSingle(raw, off);
+      if (f > 1f) f = 1f;
+      if (f < -1f) f = -1f;
+      return (int)(f * 32767f);
+    }
+    if (bps >= 4) return BitConverter.ToInt32(raw, off) >> 16;
+    return BitConverter.ToInt16(raw, off);
+  }
 
-  [DllImport("winmm.dll", CharSet = CharSet.Auto)]
-  static extern int waveInGetDevCaps(int uDeviceID, ref WAVEINCAPS pwic, int cbwic);
+  [DllImport("ole32.dll")]
+  static extern int CoInitializeEx(IntPtr pv, uint dwCoInit);
 
   [DllImport("winmm.dll")]
   static extern int waveInOpen(out IntPtr phwi, int uDeviceID, ref WAVEFORMATEX pwfx, WaveInProc dwCallback, IntPtr dwInstance, int fdwOpen);
-
   [DllImport("winmm.dll")]
   static extern int waveInPrepareHeader(IntPtr hwi, IntPtr pwh, int cbwh);
-
   [DllImport("winmm.dll")]
   static extern int waveInAddBuffer(IntPtr hwi, IntPtr pwh, int cbwh);
-
   [DllImport("winmm.dll")]
   static extern int waveInStart(IntPtr hwi);
-
   [DllImport("winmm.dll")]
   static extern int waveInStop(IntPtr hwi);
-
   [DllImport("winmm.dll")]
   static extern int waveInReset(IntPtr hwi);
-
   [DllImport("winmm.dll")]
   static extern int waveInUnprepareHeader(IntPtr hwi, IntPtr pwh, int cbwh);
-
   [DllImport("winmm.dll")]
   static extern int waveInClose(IntPtr hwi);
 
@@ -320,15 +479,74 @@ public class CbopkaMic {
     public IntPtr reserved;
   }
 
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-  struct WAVEINCAPS {
-    public ushort wMid;
-    public ushort wPid;
-    public uint vDriverVersion;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-    public string szPname;
-    public uint dwFormats;
-    public ushort wChannels;
-    public ushort wReserved1;
+  [StructLayout(LayoutKind.Sequential)]
+  public struct PROPERTYKEY {
+    public Guid fmtid;
+    public uint pid;
   }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct PROPVARIANT {
+    public ushort vt;
+    public ushort r1;
+    public ushort r2;
+    public ushort r3;
+    public uint ulVal;
+    public uint pad0;
+    public uint pad1;
+    public uint pad2;
+  }
+}
+
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+public class MMDeviceEnumeratorCom {}
+
+[ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IMMDeviceEnumerator {
+  [PreserveSig] int EnumAudioEndpoints(int dataFlow, int stateMask, out IMMDeviceCollection devices);
+  [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);
+}
+
+[ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IMMDeviceCollection {
+  [PreserveSig] int GetCount(out uint count);
+  [PreserveSig] int Item(uint index, out IMMDevice device);
+}
+
+[ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IMMDevice {
+  [PreserveSig] int Activate(ref Guid iid, int clsCtx, IntPtr activation, [MarshalAs(UnmanagedType.IUnknown)] out object instance);
+  [PreserveSig] int OpenPropertyStore(int access, out IPropertyStore store);
+}
+
+[ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IPropertyStore {
+  [PreserveSig] int GetCount(out uint count);
+  [PreserveSig] int GetAt(uint index, out CbopkaMic.PROPERTYKEY key);
+  [PreserveSig] int GetValue(ref CbopkaMic.PROPERTYKEY key, out CbopkaMic.PROPVARIANT value);
+  [PreserveSig] int SetValue(ref CbopkaMic.PROPERTYKEY key, ref CbopkaMic.PROPVARIANT value);
+  [PreserveSig] int Commit();
+}
+
+[ComImport, Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IAudioClient {
+  [PreserveSig] int Initialize(int shareMode, uint streamFlags, long bufferDuration, long periodicity, IntPtr format, ref Guid sessionGuid);
+  [PreserveSig] int GetBufferSize(out uint frames);
+  [PreserveSig] int GetStreamLatency(out long latency);
+  [PreserveSig] int GetCurrentPadding(out uint padding);
+  [PreserveSig] int IsFormatSupported(int shareMode, IntPtr format, out IntPtr closest);
+  [PreserveSig] int GetMixFormat(out IntPtr format);
+  [PreserveSig] int GetDevicePeriod(out long def, out long min);
+  [PreserveSig] int Start();
+  [PreserveSig] int Stop();
+  [PreserveSig] int Reset();
+  [PreserveSig] int SetEventHandle(IntPtr handle);
+  [PreserveSig] int GetService(ref Guid iid, [MarshalAs(UnmanagedType.IUnknown)] out object service);
+}
+
+[ComImport, Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IAudioCaptureClient {
+  [PreserveSig] int GetBuffer(out IntPtr data, out uint frames, out uint flags, out long devPos, out long qpc);
+  [PreserveSig] int ReleaseBuffer(uint frames);
+  [PreserveSig] int GetNextPacketSize(out uint frames);
 }

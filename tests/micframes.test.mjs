@@ -26,9 +26,11 @@ test('parseFrames splits status and pcm across chunks', () => {
   assert.deepEqual([...pcm[0]], [1, 2, 3, 4]);
 });
 
-test('describeFail maps exclusive-mode and privacy codes', () => {
-  assert.match(describeFail('4', ''), /монопольн/);
-  assert.match(describeFail('8889000A', ''), /монопольн/);
+test('describeFail maps driver, busy and privacy codes', () => {
+  assert.match(describeFail('1', 'open'), /драйвер/);
+  assert.match(describeFail('1', 'wave'), /драйвер/);
+  assert.doesNotMatch(describeFail('1', 'wave'), /wave/);
+  assert.match(describeFail('8889000A', ''), /занят/);
   assert.match(describeFail('80070005', ''), /запретила/);
   assert.equal(describeFail('0', 'System.Exception: c:\\Temp\\a.cs(106) : warning CS0414'), 'захват Windows не собрался');
   assert.equal(describeFail('0', 'Add-Type failed\r\nmore'), 'захват Windows не собрался');
