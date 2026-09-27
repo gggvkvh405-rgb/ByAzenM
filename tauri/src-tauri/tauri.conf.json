@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/1",
+  "package": {
+    "productName": "Cbopka",
+    "version": "2.0.0"
+  },
+  "build": {
+    "distDir": "../../client/dist",
+    "devPath": "http://127.0.0.1:3000",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "tauri": {
+    "bundle": {
+      "active": true,
+      "identifier": "com.cbopka.desktop",
+      "icon": ["icons/icon.png"],
+      "targets": ["deb", "app", "msi", "nsis"]
+    },
+    "windows": [
+      {
+        "title": "Cbopka",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 940,
+        "minHeight": 640,
+        "visible": false,
+        "resizable": true
+      }
+    ],
+    "security": { "csp": null },
+    "systemTray": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false
+    }
+  }
+}

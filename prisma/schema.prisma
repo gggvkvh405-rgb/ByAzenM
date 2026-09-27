@@ -1,0 +1,65 @@
+// Optional relational schema. The running server does not import Prisma
+// (the query engine is a native binary and would crash Electron the same way
+// better-sqlite3 does). Enable with a separate process, not inside the portable exe.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String  @id
+  username      String  @unique
+  usernameLower String  @unique
+  passwordHash  String
+  avatar        String?
+  bio           String?
+  status        String  @default("online")
+  customStatus  String  @default("")
+  lastSeen      Int?
+  createdAt     Int
+  theme         String  @default("dark")
+  nitro         Boolean @default(false)
+  totpEnabled   Boolean @default(false)
+}
+
+model Session {
+  token     String @id
+  userId    String
+  createdAt Int
+}
+
+model Message {
+  id        String  @id
+  convoId   String
+  fromId    String
+  text      String
+  at        Int
+  type      String  @default("text")
+  meta      String?
+  edited    Boolean @default(false)
+  replyTo   String?
+  reactions String  @default("{}")
+  pinned    Boolean @default(false)
+
+  @@index([convoId, at])
+}
+
+model Group {
+  id          String @id
+  name        String
+  avatar      String?
+  description String?
+  createdAt   Int
+}
+
+model Channel {
+  id       String @id
+  groupId  String
+  name     String
+  type     String
+  position Int    @default(0)
+}

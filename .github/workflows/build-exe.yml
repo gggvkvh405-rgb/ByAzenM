@@ -1,0 +1,155 @@
+name: Build EXE
+
+on:
+  push:
+    branches:
+      - main
+      - release-exe
+      - arena/01a0dc6b-byazenm
+      - "arena/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build client
+        shell: bash
+        run: |
+          cd client
+          npm install --legacy-peer-deps
+          npm run build
+          test -f dist/index.html
+          ls -lh dist dist/assets | head -30
+
+      - name: Bundle server without native modules
+        shell: bash
+        run: |
+          cd server && npm install --omit=optional --no-audit --no-fund && cd ..
+          npx --yes esbuild@0.24.2 server/index.js \
+            --bundle --platform=node --format=cjs \
+            --outfile=electron/server-bundle.cjs \
+            --external:better-sqlite3 --external:multer \
+            --external:@sentry/node --external:mediasoup --external:web-push
+          npx --yes esbuild@0.24.2 sea/entry.cjs \
+            --bundle --platform=node --format=cjs \
+            --outfile=sea/sea-bundle.cjs \
+            --external:better-sqlite3 --external:multer \
+            --external:@sentry/node --external:mediasoup --external:web-push
+          ls -lh electron/server-bundle.cjs sea/sea-bundle.cjs
+
+      - name: Build microphone helper
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio C++ tools not found" }
+          $bat = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          cmd /c "call `"$bat`" && cl /nologo /O2 /EHsc /W3 /DUNICODE /D_UNICODE /Fe:electron\CbopkaMic.exe electron\mic-capture.cpp /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup user32.lib gdi32.lib ole32.lib winmm.lib ws2_32.lib uuid.lib"
+          if (-not (Test-Path electron\CbopkaMic.exe)) { throw "CbopkaMic.exe was not built" }
+          Copy-Item electron\CbopkaMic.exe electron\CbopkaMic.bin -Force
+          Get-Item electron\CbopkaMic.bin | Format-List FullName, Length
+
+      - name: Build Electron portable exe
+        shell: bash
+        run: |
+          cd electron
+          npm install --legacy-peer-deps
+          npx electron-builder --win portable -c electron-builder.yml --publish never
+          ls -lh ../release || true
+          if [ ! -f ../release/Cbopka-1.0.0-portable.exe ]; then
+            found=$(ls -1 ../release/*.exe | head -1)
+            echo "renaming $found"
+            cp "$found" ../release/Cbopka-1.0.0-portable.exe
+          fi
+          test -f ../release/Cbopka-1.0.0-portable.exe
+
+      - name: Build SEA exe (variant 1, opens local server)
+        shell: bash
+        run: |
+          cd sea
+          node --experimental-sea-config sea-config.json
+          NODE_BIN="$(node -p "process.execPath")"
+          echo "node binary: $NODE_BIN"
+          cp "$NODE_BIN" /tmp/Cbopka.exe
+          npx --yes postject /tmp/Cbopka.exe NODE_SEA_BLOB sea-prep.blob \
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+          ls -lh /tmp/Cbopka.exe
+
+      - name: Stage both exes into root and release/
+        shell: bash
+        run: |
+          mkdir -p release /tmp/exe-save
+          cp release/Cbopka-1.0.0-portable.exe /tmp/exe-save/Cbopka-1.0.0-portable.exe
+          cp /tmp/Cbopka.exe /tmp/exe-save/Cbopka.exe
+          cp /tmp/exe-save/Cbopka-1.0.0-portable.exe ./Cbopka-1.0.0-portable.exe
+          cp /tmp/exe-save/Cbopka-1.0.0-portable.exe ./release/Cbopka-1.0.0-portable.exe
+          cp /tmp/exe-save/Cbopka.exe ./Cbopka.exe
+          cp /tmp/exe-save/Cbopka.exe ./release/Cbopka.exe
+          ls -lh Cbopka-1.0.0-portable.exe Cbopka.exe release/*.exe
+          for p in Cbopka-1.0.0-portable.exe Cbopka.exe; do
+            bytes=$(wc -c < "$p")
+            echo "$p $bytes bytes"
+            if [ "$bytes" -lt 1000000 ]; then echo "too small: $p"; exit 1; fi
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cbopka-EXE-Windows
+          path: |
+            Cbopka-1.0.0-portable.exe
+            Cbopka.exe
+            release/Cbopka-1.0.0-portable.exe
+            release/Cbopka.exe
+
+      - name: Push exes to release-exe (root and release/)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          mkdir -p /tmp/exe-save
+          cp Cbopka-1.0.0-portable.exe /tmp/exe-save/
+          cp Cbopka.exe /tmp/exe-save/
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
+          git fetch origin release-exe || true
+          if git show-ref --verify --quiet refs/remotes/origin/release-exe; then
+            git checkout -f -B release-exe origin/release-exe
+          else
+            git checkout -f -B release-exe
+          fi
+          mkdir -p release
+          cp /tmp/exe-save/Cbopka-1.0.0-portable.exe ./Cbopka-1.0.0-portable.exe
+          cp /tmp/exe-save/Cbopka-1.0.0-portable.exe ./release/Cbopka-1.0.0-portable.exe
+          cp /tmp/exe-save/Cbopka.exe ./Cbopka.exe
+          cp /tmp/exe-save/Cbopka.exe ./release/Cbopka.exe
+          git add -f Cbopka-1.0.0-portable.exe release/Cbopka-1.0.0-portable.exe Cbopka.exe release/Cbopka.exe
+          git status --short
+          git commit -m "build: Cbopka 2.0 portable exe + SEA" || echo "no exe changes"
+          git push origin release-exe
+
+      - name: GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          tag_name: v2.0.0
+          name: Cbopka 2.0
+          files: |
+            Cbopka-1.0.0-portable.exe
+            Cbopka.exe
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

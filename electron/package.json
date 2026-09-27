@@ -1,0 +1,20 @@
+{
+  "name": "cbopka-desktop",
+  "version": "1.0.0",
+  "description": "Cbopka 2.0 — native window, tray, no browser chrome",
+  "author": "Cbopka",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "bundle": "esbuild ../server/index.js --bundle --platform=node --format=cjs --outfile=server-bundle.cjs --external:better-sqlite3 --external:multer --external:@sentry/node --external:mediasoup --external:web-push",
+    "build:win": "npm run bundle && electron-builder --win portable -c electron-builder.yml --publish never"
+  },
+  "devDependencies": {
+    "electron": "^30.5.1",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.24.2"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  }
+}

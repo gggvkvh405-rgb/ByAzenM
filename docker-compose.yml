@@ -1,0 +1,35 @@
+services:
+  cbopka:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      TURN_URLS: "turn:coturn:3478,turn:coturn:3478?transport=tcp"
+      TURN_USER: cbopka
+      TURN_PASS: cbopka-turn
+      # Set to 1 only in an image that has mediasoup compiled. Default calls use mesh.
+      ENABLE_MEDIASOUP: "0"
+      SENTRY_DSN: ""
+    volumes:
+      - cbopka-data:/app/server/data
+      - cbopka-uploads:/app/server/uploads
+    restart: unless-stopped
+
+  coturn:
+    image: instrumentisto/coturn:latest
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --lt-cred-mech
+      - --fingerprint
+      - --realm=cbopka
+      - --user=cbopka:cbopka-turn
+      - --listening-port=3478
+      - --external-ip=127.0.0.1
+    restart: unless-stopped
+
+volumes:
+  cbopka-data:
+  cbopka-uploads:

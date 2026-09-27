@@ -1,0 +1,23 @@
+{
+  "name": "cbopka-server",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cbopka 2.0 realtime server. better-sqlite3 and multer are optional and never loaded when DISABLE_SQLITE / DISABLE_MULTER are set.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0",
+    "multer": "^1.4.5-lts.1",
+    "web-push": "^3.6.7"
+  }
+}

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Cbopka</title>
+    <meta name="description" content="Cbopka 2.0 — чаты, комнаты и звонки. Нативное приложение, не вкладка браузера." />
+    <meta name="theme-color" content="#0c0d11" />
+    <link rel="icon" href="./icon-192.png" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <style>
+      html, body, #root { height: 100%; margin: 0; background: #0c0d11; color: #f6f1e8; }
+      #boot {
+        min-height: 100%;
+        display: grid;
+        place-items: center;
+        font-family: Outfit, Segoe UI, sans-serif;
+        background:
+          radial-gradient(600px 320px at 20% 0%, rgba(255,106,69,.18), transparent 60%),
+          radial-gradient(500px 300px at 90% 100%, rgba(110,224,194,.12), transparent 60%),
+          #0c0d11;
+      }
+      #boot .mark { width: 72px; height: 72px; border-radius: 22px; }
+      #boot p { color: #a39c92; letter-spacing: .08em; text-transform: uppercase; font-size: 12px; }
+    </style>
+    <script type="module" crossorigin src="./assets/index-DILRMCyB.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BeSHoCdT.css">
+  </head>
+  <body>
+    <div id="root">
+      <div id="boot">
+        <div style="text-align:center">
+          <img class="mark" src="./icon-192.png" alt="" />
+          <h1 style="font-weight:560;letter-spacing:-.03em;margin:16px 0 6px">Cbopka</h1>
+          <p>загружается</p>
+        </div>
+      </div>
+    </div>
+    <script>
+      setTimeout(function () {
+        var boot = document.getElementById('boot');
+        if (!boot) return;
+        var p = boot.querySelector('p');
+        if (p) p.textContent = 'долго грузится — обновите страницу';
+      }, 12000);
+    </script>
+  </body>
+</html>

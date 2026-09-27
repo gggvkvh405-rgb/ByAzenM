@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main, arena/01a0dc6b-byazenm, "arena/**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and test
+        run: |
+          npm install --prefix server
+          npm install --prefix client
+          node --test tests/*.test.mjs
+          npm run build --prefix client
+          test -f client/dist/index.html
+      - name: Typecheck shared protocol
+        run: |
+          npm install --no-save typescript@5.7.2
+          npx tsc -p tsconfig.json --noEmit
