@@ -1,17 +1,22 @@
 const { spawn, execFile } = require('child_process');
+const crypto = require('crypto');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
 
 const PS1 = [
-  'param([int]$Port, [string]$Src)',
+  'param([int]$Port, [string]$Dll, [string]$Src)',
   '$ErrorActionPreference = "Stop"',
+  '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false',
   'try {',
-  '  $code = [System.IO.File]::ReadAllText($Src)',
-  '  Add-Type -TypeDefinition $code',
+  '  if ($Dll) { Add-Type -Path $Dll }',
+  '  else {',
+  '    $code = [System.IO.File]::ReadAllText($Src)',
+  '    Add-Type -TypeDefinition $code -CompilerOptions "/warn:0 /nologo"',
+  '  }',
   '  [CbopkaMic]::Run($Port)',
   '} catch {',
-  '  [Console]::Error.WriteLine($_.Exception.ToString())',
+  '  [Console]::Error.WriteLine($_.Exception.Message)',
   '  exit 1',
   '}',
   ''
@@ -46,6 +51,8 @@ function parseFrames(state, chunk, onStatus, onPcm) {
 }
 
 function describeFail(token, text) {
+  const raw = String(text || '');
+  if (/System\.Exception|\.cs\(|CS\d{4}|Add-Type|CompilerError/i.test(raw)) return 'захват Windows не собрался';
   const t = String(token || '').toUpperCase();
   const map = {
     4: 'микрофон занят монопольным режимом',
@@ -58,9 +65,33 @@ function describeFail(token, text) {
     '80070005': 'Windows запретила доступ к микрофону'
   };
   if (map[t]) return map[t];
-  const line = String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || '';
-  if (!line) return t ? ('код ' + t) : 'не открылся';
-  return line.slice(0, 180);
+  const line = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || '';
+  if (!line || /[^\x09\x0a\x0d\x20-\x7e\u0400-\u04FF]/.test(line)) return t ? ('код ' + t) : 'не открылся';
+  return line.slice(0, 140);
+}
+
+function cscPath() {
+  const win = process.env.WINDIR || 'C:\\Windows';
+  const candidates = [
+    path.join(win, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe'),
+    path.join(win, 'Microsoft.NET', 'Framework', 'v4.0.30319', 'csc.exe')
+  ];
+  return candidates.find((p) => {
+    try { return fs.existsSync(p); } catch { return false; }
+  }) || '';
+}
+
+function compileDll(csPath, dir) {
+  const csc = cscPath();
+  if (!csc) return Promise.resolve('');
+  const hash = crypto.createHash('sha1').update(fs.readFileSync(csPath)).digest('hex').slice(0, 10);
+  const dll = path.join(dir, 'CbopkaMic-' + hash + '.dll');
+  if (fs.existsSync(dll)) return Promise.resolve(dll);
+  return new Promise((resolve) => {
+    execFile(csc, ['/nologo', '/optimize+', '/warn:0', '/target:library', '/r:System.dll', '/utf8output', '/out:' + dll, csPath], { windowsHide: true, timeout: 20000 }, (err) => {
+      resolve(!err && fs.existsSync(dll) ? dll : '');
+    });
+  });
 }
 
 function userDataDir() {
@@ -145,12 +176,14 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function launch(onPcm) {
+async function launch(onPcm) {
   const my = session;
   let files;
   try { files = materializeSource(); } catch (e) {
-    return Promise.resolve({ ok: false, error: e.message, code: 'missing' });
+    return { ok: false, error: e.message, code: 'missing' };
   }
+  let dll = '';
+  try { dll = await compileDll(files.cs, files.dir); } catch { dll = ''; }
   return new Promise((resolve) => {
     const listener = net.createServer();
     let settled = false;
@@ -200,10 +233,13 @@ function launch(onPcm) {
     listener.listen(0, '127.0.0.1', () => {
       const port = listener.address().port;
       let log = '';
-      const proc = spawn(powershellExe(), [
+      const args = [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-        '-File', files.ps1, '-Port', String(port), '-Src', files.cs
-      ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        '-File', files.ps1, '-Port', String(port)
+      ];
+      if (dll) args.push('-Dll', dll);
+      else args.push('-Src', files.cs);
+      const proc = spawn(powershellExe(), args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       if (my !== session) {
         try { proc.kill(); } catch {}
         return;

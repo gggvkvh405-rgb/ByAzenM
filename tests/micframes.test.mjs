@@ -30,5 +30,6 @@ test('describeFail maps exclusive-mode and privacy codes', () => {
   assert.match(describeFail('4', ''), /монопольн/);
   assert.match(describeFail('8889000A', ''), /монопольн/);
   assert.match(describeFail('80070005', ''), /запретила/);
-  assert.equal(describeFail('0', 'Add-Type failed\r\nmore'), 'Add-Type failed');
+  assert.equal(describeFail('0', 'System.Exception: c:\\Temp\\a.cs(106) : warning CS0414'), 'захват Windows не собрался');
+  assert.equal(describeFail('0', 'Add-Type failed\r\nmore'), 'захват Windows не собрался');
 });

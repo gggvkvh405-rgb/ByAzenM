@@ -135,11 +135,14 @@ function explain(e, inputs, osNames, nativeFail) {
   }
   if (busy || nativeFail) {
     const names = seen.length ? ` Видит: ${seen.slice(0, 2).join(', ')}.` : '';
-    const extra = nativeFail?.error ? ` Запасной захват: ${nativeFail.error}.` : '';
+    const extra = nativeFail?.error ? ` ${nativeFail.error}.` : '';
+    const compile = /не собрался/.test(nativeFail?.error || '');
     return {
       denied: false,
-      settings: 'recording',
-      error: `Windows не отдала микрофон.${names}${extra} В списке записи: ваш микрофон → Свойства → Дополнительно → снимите обе галочки «Монопольный режим» → ОК. Потом снова «Разрешить». Если спросит про PowerShell — нажмите Да.`
+      settings: compile ? 'none' : 'recording',
+      error: compile
+        ? `Микрофон на месте, но запасной захват не запустился.${names} Закройте программу полностью, включая трей, и откройте её ещё раз.`
+        : `Windows не отдала микрофон.${names}${extra} В списке записи: микрофон → Свойства → Дополнительно → снимите обе галочки «Монопольный режим» → ОК. Потом снова «Разрешить». Если спросит про PowerShell — нажмите Да.`
     };
   }
   if (missing || !inputs.length) {
